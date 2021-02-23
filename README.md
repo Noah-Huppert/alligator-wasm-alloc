@@ -16,7 +16,7 @@ Currently the allocator implementation and benchmark
 program are one in the same. They will be split soon.
 
 # Building
-[Rust](https://www.rust-lang.org/), [wasm-pack](https://rustwasm.github.io/wasm-pack/), and [GNU Make](https://www.gnu.org/software/make/)
+[Rust](https://www.rust-lang.org/) with the `wasm32-unknown-unknown` target, [wasm-pack](https://rustwasm.github.io/wasm-pack/), and [GNU Make](https://www.gnu.org/software/make/)
 must be installed.
 
 The output of the project is a Web Assembly program.
