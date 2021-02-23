@@ -1,0 +1,5 @@
+# Rust build
+target/
+
+# WASM Pack build
+pkg/
