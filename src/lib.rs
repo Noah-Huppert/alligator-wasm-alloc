@@ -49,22 +49,22 @@ impl AlligatorHeap {
         // Get current number of allocated pages
         let num_pages = wasm32::memory_size(WASM_MEMORY_IDX);
 
-        // // Find a free page
-        // for i in 0..num_pages {
-        //     if self.free_status[i] {
-        //         // Page is free, mark as allocated
-        //         self.free_status[i] = false;
+        // Find a free page
+        for i in 1..num_pages {
+            if self.free_status[i] {
+                // Page is free, mark as allocated
+                self.free_status[i] = false;
 
-        //         let page_ptr = (WASM_PAGE_BYTES * i) as *mut u8;
-        //         return page_ptr;
-        //     }
-        // }
+                let page_ptr = (WASM_PAGE_BYTES * i) as *mut u8;
+                return page_ptr;
+            }
+        }
 
-        // // Check if at max pages
-        // if num_pages == ALLOC_MAX_PAGES {
-        //     // At maximum number of pages
-        //     return null_mut();
-        // }
+        // Check if at max pages
+        if num_pages == ALLOC_MAX_PAGES {
+            // At maximum number of pages
+            return null_mut();
+        }
 
         // Allocate a new page
         let grow_res = wasm32::memory_grow(WASM_MEMORY_IDX, 1);
@@ -73,8 +73,8 @@ impl AlligatorHeap {
             return null_mut();
         }
 
-        //let page_ptr = (WASM_PAGE_BYTES * (num_pages+1)) as *mut u8;
-        let page_ptr = (WASM_PAGE_BYTES * (num_pages)) as *mut u8;
+        // let page_ptr = (WASM_PAGE_BYTES * (num_pages+1)) as *mut u8;
+                let page_ptr = (WASM_PAGE_BYTES * (num_pages)) as *mut u8;
         return page_ptr;
     }
 
@@ -113,7 +113,7 @@ unsafe impl GlobalAlloc for AlligatorAlloc {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        //(*self.heap.get()).dealloc(ptr, layout);
+        (*self.heap.get()).dealloc(ptr, layout);
     }
 }
 
