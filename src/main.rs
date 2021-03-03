@@ -3,13 +3,6 @@ use core::arch::wasm32;
 use core::cell::UnsafeCell;
 use core::ptr::{null_mut};
 
-use wasm_bindgen::prelude::*;
-extern crate console_error_panic_hook;
-use std::panic;
-//use web_sys::console;
-
-//extern crate wee_alloc;
-
 /// The index specifying which memory wasm should
 /// allocate. Currently in wasm this is only and
 /// always 0.
@@ -125,17 +118,10 @@ unsafe impl GlobalAlloc for AlligatorAlloc {
 #[global_allocator]
 static ALLOC: AlligatorAlloc = AlligatorAlloc::INIT;
 
-// #[wasm_bindgen(start)]
-// pub fn main() {
-//     panic::set_hook(Box::new(console_error_panic_hook::hook));
-// }
-
-#[wasm_bindgen]
-extern {
-    pub fn alert(s: &str);
+fn main() {
+    greet("Alligator wasmtime");
 }
 
-#[wasm_bindgen]
-pub fn greet(name: &str) {
-    alert(&format!("hello {}", name));
+fn greet(name: &str) {
+    println!("hello {}", name);
 }

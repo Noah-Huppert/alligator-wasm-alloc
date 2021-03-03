@@ -1,7 +1,14 @@
-.PHONY: build serve
+.PHONY: build run
+
+BUILD_TARGET ?= wasm32-wasi
+BUILD_OUT_WASM ?= target/${BUILD_TARGET}/debug/alligator.wasm
 
 build:
-	wasm-pack build --target web
+	cargo build --target ${BUILD_TARGET}
 
-serve:
-	python3 -m http.server 8000
+run:
+	wasmtime run ${BUILD_OUT_WASM}
+
+verbose-run:
+	make run WASMTIME_BACKTRACE_DETAILS=1
+
