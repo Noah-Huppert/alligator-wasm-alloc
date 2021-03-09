@@ -1,20 +1,30 @@
-.PHONY: build run verbose-run debug clean
+.PHONY: build-wasm build-host run-wasm run-host run-wasm-verbose debug-wasm clean
 
-BUILD_TARGET ?= wasm32-wasi
+WASM_TARGET ?= wasm32-wasi
 BUILD_OUT_DIR ?= target
-BUILD_OUT_WASM ?= ${BUILD_OUT_DIR}/${BUILD_TARGET}/debug/alligator.wasm
+BUILD_OUT_WASM ?= ${BUILD_OUT_DIR}/${WASM_TARGET}/debug/alligator.wasm
+BUILD_OUT_HOST_BIN ?= ${BUILD_OUT_DIR}/debug/alligator
 
-build:
-	cargo build --target ${BUILD_TARGET}
+build-host:
+	cargo build
 
-run:
+build-wasm:
+	cargo build --target ${WASM_TARGET}
+
+run-wasm:
 	wasmtime run ${BUILD_OUT_WASM}
 
-verbose-run:
-	make run WASMTIME_BACKTRACE_DETAILS=1
+run-host:
+	./${BUILD_OUT_HOST_BIN}
 
-debug:
+run-wasm-verbose:
+	make run-wasm WASMTIME_BACKTRACE_DETAILS=1
+
+debug-wasm:
 	lldb -- wasmtime -g ${BUILD_OUT_WASM}
+
+debug-host:
+	rust-lldb ${BUILD_OUT_HOST_BIN}
 
 clean:
 	rm -rf ${BUILD_OUT_DIR}
