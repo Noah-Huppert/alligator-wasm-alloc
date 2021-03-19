@@ -10,10 +10,6 @@ mod heap;
 /// allocations will fail.
 const ALLOC_PAGES: usize = 100;
 
-/// The byte address of the last allocatable space of memory
-/// in the segment the allocator will work in.
-const ALLOC_END_BYTES: u32 = (heap::PAGE_BYTES as u32) * (ALLOC_PAGES as u32);
-
 /// Allocates an initial number of memory pages, then
 /// maintains a free linked list.
 struct AllocatorImpl {

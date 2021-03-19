@@ -1,0 +1,7 @@
+[submodule "hangover-fuz"]
+	path = hangover-fuzzer
+	url = git@github.com:emeryberger/hangover.git
+[submodule "AFLplusplus"]
+	path = AFLplusplus
+	url = git@github.com:AFLplusplus/AFLplusplus.git
+	ignore = dirty

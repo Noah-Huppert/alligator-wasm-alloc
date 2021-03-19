@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+CPU_LAST_FILE=/tmp/noahhuppert-alligator-cpufreq-last
+
+CPUS_DIR=/sys/devices/system/cpu
+CPU_FREQ_FILE=cpufreq/scaling_governor
+
+check() {
+    if [[ "$?" != "0" ]]; then
+	   die "$@"
+    fi
+}
+
+bold() {
+    echo "$(tput bold)$@$(tput sgr0)"
+}
+
+die() {
+    echo "Error: $@" >&2
+    exit 1
+}
+
+# Sets all CPU frequencies
+set_cpu_freq() { # ( freq_value )
+    freq_value="$1"
+
+    now_freq=$(cat "${CPUS_DIR}/cpu0/${CPU_FREQ_FILE}")
+    check "Failed to get CPU0's frequency to save as previous frequency"
+
+    prev_freq=$(get_last_cpu_freq)
+    check "Failed to get previous frequency"
+
+    if [[ "$now_freq" != "$prev_freq" ]]; then
+	   echo "$now_freq" > "$prev_freq"
+	   check "Failed to save previous CPU frequency"
+    fi
+
+    echo "$freq_value" | tee "${CPUS_DIR}/"cpu*/"${CPU_FREQ_FILE}"
+    check "Failed to set CPUs to \"$freq_value\" mode"
+    
+    bold "Set CPU's frequency scaling to \"$freq_value\" mode"
+}
+
+# Gets last CPU frequency
+get_last_cpu_freq() {
+    cat "$CPU_LAST_FILE"
+}
+
+while getopts "hpsgu" opt; do
+    case "$opt" in
+	   h)
+		  cat <<EOF
+cpufreqctl - Adjusts the linux Kernel's CPU frequency scaling mechanism
+
+USAGE
+
+    cpufreqctl [-h] -p|-r|-s
+
+OPTIONS
+
+    -h    Show help text
+    -p    Set CPU frequency scale to performance mode
+    -s    Set CPU frequency scale to powersave mode
+    -g    Get CPU frequency scale values
+    -u    Undo to last CPU frequency mode
+
+BEHAVIOR
+
+    Options -p, -s, -g, and -u cannot be provided at the
+    same time.
+
+    Stores the state of the CPU frequency before making
+    any change in
+
+        $CPU_LAST_FILE
+
+    Uses the file
+
+        ${CPUS_DIR}/cpu*/${CPU_FREQ_FILE}
+
+    to control the Kernel CPU frequency scaling.
+
+EOF
+		  exit 0
+		  ;;
+	   p) opt_perf=true ;;
+	   s) opt_save=true ;;
+	   g) opt_get=true ;;
+	   u) opt_undo=true ;;
+	   '?') die "Unknown option" ;;
+    esac
+done
+
+if [ -n "$opt_perf" ] && [ -n "$opt_save" ] && ["$opt_undo" ]; then
+    die "Options -p, -s, and -u cannot both be provided"
+fi
+
+if [ -n "$opt_perf" ]; then
+    set_cpu_freq performance
+elif [ -n "$opt_save" ]; then
+    set_cpu_freq powersave
+elif [ -n "$opt_undo" ]; then
+    last=$(get_last_cpu_freq)
+    check "Failed to get last CPU frequency"
+
+    set_cpu_freq "$last"
+
+    bold "Reverted CPU's frequency"
+elif [ -n "$opt_get" ]; then
+    cat "${CPUS_DIR}/"cpu*/"${CPU_FREQ_FILE}"
+    check "Failed to get CPU frequencies"
+else
+    die "Must specify options -p, -s, and -u"
+fi
+
