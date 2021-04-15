@@ -1,2 +1,5 @@
 # Rust build
 target/
+
+# C build
+c-test

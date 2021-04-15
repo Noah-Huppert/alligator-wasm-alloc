@@ -9,6 +9,7 @@ Rust Web Assembly allocator.
   - [Running Hello World](#running-hello-world)
   - [Debugging](#debugging)
   - [Fuzzing](#fuzzing)
+- [Design](#design)
 
 # Overview
 Alligator is an effort to build a great Web Assembly
@@ -19,7 +20,7 @@ stages. The Alligator development's vision:
 > from the `malloc` world programmers have been
 > working with for decades. Web Assembly's memory is a
 > contiguous byte array which can never shrink.
-> Alligator treats Web Assembly as an embedded
+> Alligator treats Web Assembly as a real time embedded
 > environment by trying to maintain a low memory
 > overhead and have a constant time complexity.
 
@@ -51,20 +52,17 @@ fn main() {
 ```
 
 # Development
-[Rust](https://www.rust-lang.org/) with the `wasm32-wasi` target, [wasmtime](https://wasmtime.dev/), [LLDB](https://lldb.llvm.org/), and [GNU Make](https://www.gnu.org/software/make/)
+[Rust](https://www.rust-lang.org/) with the `wasm32-wasi` target (and `i686-unknown-linux-gnu` for development purposes), [wasmtime](https://wasmtime.dev/), [LLDB](https://lldb.llvm.org/), and [GNU Make](https://www.gnu.org/software/make/)
 must be installed.
 
 ## Targets
 Alligator is meant as a heap allocator for Web Assembly
-only. However targets which implement the C standard
-library can run Alligator for debugging purposes.
+only. However other targets can run Alligator for debugging purposes.
 
-### C stdlib
-**Alligator on the C stdlib is only for development.**
+If type `heap::HeapType` is not found in `src/alloc/heap.rs` then the current build platform is not supported.
 
-Alligator can target a host binary or a dynamic library.
-For example the hello world binary can be built as a
-host binary instead of a `.wasm` file.
+### Debugging Targets
+Targets which implement libc with 32 bit pointer length can be used for development purposes. By default the Rust `i686-unknown-linux-gnu` target is used for this purpose.
 
 **How:** A shim uses `malloc` to simulate WASM memory.
 Allowing Alligator to run on non WASM targets.
@@ -101,11 +99,7 @@ an `alligator.wasm` file.
 ## Debugging
 Due to the lack of debugging support for Web Assembly
 debugging is easier to do in a native binary format 
-like that of x86 (or whatever platform you have). The
-`HostHeap` struct abstracts a WASM heap. Its
-implementation changes based on the build target. On
-WASM it just proxies the WASM memory calls. On libc
-targets it uses `malloc`.
+like that of 32-bit libc systems (See [Debugging Targets](#debugging-targets)).
 
 To debug with lldb:
 
@@ -163,6 +157,12 @@ This will automatically build AFL and HangOver, build
 Alligator as a dynamic library, and run the
 fuzzing setup.
 
+Results will be stored in
+`hangover-fuzzer/afl_out/default`. This fuzz Make target
+also sets one's CPU clock frequency scaling to
+`performance` mode using the `cpufreqctl` script. It
+should set it back to what it was before automatically.
+
 If you want to build AFL manually run:
 
 ```
@@ -180,3 +180,58 @@ If you want to build the dynamic library manually run:
 ```
 make liballigatorc-build
 ```
+
+The `test-c.c` file is a basic C program which simply
+calls `alloc` and `dealloc` from the dynamic library.
+This is meant to ensure the dynamic library is
+functioning minimally correctly. Build this file
+by running:
+
+```
+make c-test-build
+```
+
+Then run `./c-test`.
+
+# Design
+## Size Classes
+Alligator is a size class allocator. Allocated objects are put into size class
+buckets. Size classes buckets are in power of two increments of bytes. The
+smallest size class is `0` aka `2^0 = 1B`. The largest size class is `11`
+aka `2^11 = 2048B`.
+
+## MiniPages
+Alligator implements a less complex version of MiniHeaps and free Vectors from
+the [MESH allocator whitepaper](https://raw.githubusercontent.com/plasma-umass/Mesh/master/mesh-pldi19-powers.pdf).
+To avoid confusion between the two (as Alligator does not implement much 
+functionality from the MESH paper's MiniHeaps) these will be called MiniPages
+in alligator.
+
+MiniPages are 2kB sections of memory, from which same size class allocations are
+made.
+
+Since all objects in a MiniPage heap section will be the same size, we can
+refer to them by their index. These uniformly sized pieces of the MiniPage
+memory section will be called Segments.
+
+Each MiniPage stores a small header within the heap right before the 2kB memory
+section. This header contains: 
+
+- Size class (1B)
+- Bit-packed Segment free list (256B)
+  - Right now this is constantly sized
+  - In the future I would like to make the size depend on the size class according to this formula
+  `ceiling(2kB / (2^size_class))` bits. The number of bits is rounded up to the
+  nearest increment of 8, as to align the free list on 1 byte addresses.
+
+In order to find free Segment indexes in constant time, a stack of free segment
+indexes will be maintained for the most recently used MiniPage of each
+size class. This will be stored in the program's stack memory area. This stack
+is called the free Vector. Each free vector can store up to 256 free segment
+indexes.
+
+For free segments smaller than size class `3` (8B) not all possible free indexes
+can be stored in this size. For size classes greater than `3` (8B) there will
+always be extra space in these free vectors. (The idea of dynamically sized
+stacks: so that there is no loss or waste of memory for smaller or bigger size
+classes, will be implemented soon).

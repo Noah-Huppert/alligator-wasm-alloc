@@ -30,7 +30,7 @@ set_cpu_freq() { # ( freq_value )
     check "Failed to get previous frequency"
 
     if [[ "$now_freq" != "$prev_freq" ]]; then
-	   echo "$now_freq" > "$prev_freq"
+	   echo "$now_freq" > "$CPU_LAST_FILE"
 	   check "Failed to save previous CPU frequency"
     fi
 

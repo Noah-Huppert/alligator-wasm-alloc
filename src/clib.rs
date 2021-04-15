@@ -1,11 +1,14 @@
 mod alloc;
+use alloc::AlligatorAlloc;
+use alloc::heap::HeapType;
+
 
 use core::alloc::Layout;
 use std::alloc::GlobalAlloc;
 use libc::size_t;
 use std::ffi::c_void;
 
-static ALLOC: alloc::AlligatorAlloc = alloc::AlligatorAlloc::INIT;
+static ALLOC: AlligatorAlloc<HeapType> = AlligatorAlloc::INIT;
 
 #[no_mangle]
 pub unsafe extern "C" fn alligator_alloc(size: size_t) -> *mut c_void {

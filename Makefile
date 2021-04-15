@@ -8,13 +8,14 @@ SRC_FILES_HELLO_WORLD ?= src/hello-world.rs ${SRC_FILES_CORE}
 # ... Build outputs
 BUILD_OUT ?= ./target
 
-BUILD_DIR_WASM ?= wasm32-wasi
-BUILD_DIR_HOST ?= debug
+TARGET_WASM ?= wasm32-wasi
+TARGET_LIBC32 ?= i686-unknown-linux-gnu
 
 # ... ... liballigatorc
-LIBALLIGATORC_BUILD_OUT ?= ${BUILD_OUT}/${BUILD_DIR_HOST}/liballigatorc.so
+LIBALLIGATORC_LIB_OUT ?= ${BUILD_OUT}/${TARGET_LIBC32}/debug/liballigatorc.so
 LIBALLIGATORC_HEADER_FILE ?= liballigatorc.h
-LIBALLIGATORC_HEADER_OUT ?= ${BUILD_OUT}/${BUILD_DIR_HOST}/${LIBALLIGATORC_HEADER_FILE}
+LIBALLIGATORC_HEADER_OUT ?= ${BUILD_OUT}/${TARGET_LIBC32}/debug/${LIBALLIGATORC_HEADER_FILE}
+LIBALLIGATORC_BUILD_OUT ?= ${LIBALLIGATORC_LIB_OUT} ${LIBALLIGATORC_HEADER_OUT}
 
 # ... ... fuzzing
 HANGOVER_DIR ?= hangover-fuzzer
@@ -24,21 +25,21 @@ AFL_CXX ?= ${AFL_DIR}/afl-c++
 AFL_FUZZ ?= ${AFL_DIR}/afl-fuzz
 
 # ... ... hello world
-HELLO_WORLD_BUILD_HOST_OUT ?= ${BUILD_OUT}/${BUILD_DIR_HOST}/hello-world
-HELLO_WORLD_BUILD_WASM_OUT ?= ${BUILD_OUT}/${BUILD_DIR_WASM}/debug/hello-world.wasm
+HELLO_WORLD_BUILD_HOST_OUT ?= ${BUILD_OUT}/${TARGET_LIBC32}/debug/hello-world
+HELLO_WORLD_BUILD_WASM_OUT ?= ${BUILD_OUT}/${TARGET_WASM}/debug/hello-world.wasm
 
 # Just make a C binary which calls the Alligator
 # functions to ensure they work bare minimum.
 # WIP
 c-test-build:
-	g++ -L./target/debug -lalligatorc -g -include./target/debug/liballigatorc.h c-test.c -o c
+	g++ -L./target/debug -lalligatorc -g -include./target/debug/liballigatorc.h c-test.c -o c-test
 
 # Build the alligator C dynamic library, used to fuzz
 liballigatorc-build: ${LIBALLIGATORC_BUILD_OUT}
 ${LIBALLIGATORC_BUILD_OUT}: src/clib.rs ${SRC_FILES_CORE} $(wildcard src/bin/**)
-	cargo build --lib
+	cargo build --lib --target ${TARGET_LIBC32}
 	cargo run --bin generate-cheaders
-	mv ${LIBALLIGATORC_HEADER_FILE} ${BUILD_OUT}/${BUILD_DIR_HOST}
+	mv ${LIBALLIGATORC_HEADER_FILE} ${LIBALLIGATORC_HEADER_OUT}
 
 afl-build: ${AFL_CXX}
 ${AFL_CXX}: $(wildcard ${AFL_DIR}/src/**)
@@ -49,7 +50,7 @@ hangover-fuzzer-build: ${HANGOVER_BUILD_OUT}
 ${HANGOVER_BUILD_OUT}: ${HANGOVER_DIR}/hangover.cpp afl-build
 	${AFL_CXX} \
 		-std=c++14 -O0 -g \
-		-L${BUILD_OUT}/${BUILD_DIR_HOST} -lalligatorc \
+		-L${BUILD_OUT}/${TARGET_LIBC32}/debug -lalligatorc \
 		-include${LIBALLIGATORC_HEADER_OUT} \
 		-DHANGOVER_MALLOC=alligator_alloc \
 		-DHANGOVER_FREE=alligator_dealloc \
@@ -58,27 +59,27 @@ ${HANGOVER_BUILD_OUT}: ${HANGOVER_DIR}/hangover.cpp afl-build
 
 # Run the memory allocator fuzzer on the dynamic
 # alligatorc library
-liballigatorc-fuzz: afl-build hangover-fuzzer-build liballigatorc-build
+liballigatorc-fuzz: liballigatorc-build afl-build hangover-fuzzer-build
 	sudo ./cpufreqctl -p
-	LD_LIBRARY_PATH=${BUILD_OUT}/${BUILD_DIR_HOST}:${LD_LIBRARY_PATH} \
+	bash -c "trap 'sudo ./cpufreqctl -u' EXIT; \
+	LD_LIBRARY_PATH=${BUILD_OUT}/${TARGET_LIBC32}:${LD_LIBRARY_PATH} \
 	${AFL_FUZZ} \
 		-m 18000000 \
 		-t 100 \
 		-x ${HANGOVER_DIR}/dictionary/malloc.dict \
 		-i ${HANGOVER_DIR}/afl_in \
 		-o ${HANGOVER_DIR}/afl_out \
-		${HANGOVER_BUILD_OUT}
-	sudo ./cpufreqctl -u
+		${HANGOVER_BUILD_OUT}"
 
 # Build hello world
 hello-world-build-wasm: ${SRC_FILES_HELLO_WORLD}
-	cargo build --bin hello-world --target wasm32-wasi
+	cargo build --bin hello-world --target ${TARGET_WASM}
 hello-world-build-host: ${SRC_FILES_HELLO_WORLD}
-	cargo build --bin hello-world
+	cargo build --bin hello-world --target ${TARGET_LIBC32}
 
 # Run hello world
 hello-world-run-wasm: hello-world-build-wasm
-	wasmtime run ${HELLO_WORLD_WASM_OUT}
+	WASMTIME_BACKTRACE_DETAILS=1 wasmtime run ${HELLO_WORLD_BUILD_WASM_OUT}
 hello-world-run-host: hello-world-build-host
 	./${HELLO_WORLD_BUILD_HOST_OUT}
 
