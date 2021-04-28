@@ -5,8 +5,11 @@ Rust Web Assembly allocator.
 - [Overview](#overview)
 - [Usage](#usage)
 - [Development](#development)
-  - [Targets](#targets)
-  - [Running Hello World](#running-hello-world)
+  - [Makefile](#makefile)
+  - [Compile Targets](#compile-targets)
+  - [Debugging Targets](#compile-targets)
+  - [Running Benchmarks](#running-benchmarks)
+  - [Compile Time Features](#compile-time-features)
   - [Debugging](#debugging)
   - [Fuzzing](#fuzzing)
 - [Design](#design)
@@ -55,7 +58,37 @@ fn main() {
 [Rust](https://www.rust-lang.org/) with the `wasm32-wasi` target (and `i686-unknown-linux-gnu` for development purposes), [wasmtime](https://wasmtime.dev/), [LLDB](https://lldb.llvm.org/), and [GNU Make](https://www.gnu.org/software/make/)
 must be installed.
 
-## Targets
+## Makefile
+A Makefile is provided which performs all development tasks in this repository. Make targets are named in the format `<object>-<action>-<target>`, although some do not specify a `<target>`.
+
+Normal users of Alligator should use the `alligator` Cargo crate.
+
+The Makefile provides the following objects:
+
+- `liballigatorc` - Dynamic C library with Alligator allocator
+  - Actions:
+    - `build` - Build the dynamic C library and headers, AFL and Hangover fuzzer
+	- `fuzz` - `build` then run AFL and Hangover fuzzers on dynamic C library
+  - Only builds for the `host` 32-bit LibC platform, set via `TARGET_LIBC32`, defaults to `i686-unknown-linux-gnu`
+  - Ex: `liballigatorc-fuzz`
+- `bench` - Example programs which use Alligator
+  - The exact benchmark program must be specified using the `BENCH` variable (defaults to `use-global`), see [Running Benchmarks](#running-benchmarks) for details.
+  - Actions:
+    - `build` - Build target binary
+	- `run` - `build` then run target binary
+	- `debug` - `build` then use lldb to debug the binary
+  - Targets:
+    - `host` - 32-bit LibC platform, set via `TARGET_LIBC32`, defaults to `i686-unknown-linux-gnu`
+	- `wasm` - WASI32 WASM
+  - Ex: `bench-run-host` or `bench-debug-wasm`
+- `c-test` - Very basic C test program for `liballigatorc`
+  - `c-test-build` - Build `c-test` Binary from `c-test.c`
+  
+Cargo is used to build the C dynamic library in `liballigatorc` and the binaries in `bench`. A host C++ toolchain is used to build AFL and Hangover fuzzer in `liballigatorc` and the test program in `c-test`.
+
+To provide arguments to Cargo when it is building or running, modify the `CARGO_BARGS` (build arguments) and `RARGS` (run arguments) environment variables. Use `+=` when setting them to preserve behavior.
+  
+## Compile Targets
 Alligator is meant as a heap allocator for Web Assembly
 only. However other targets can run Alligator for debugging purposes.
 
@@ -72,29 +105,44 @@ However, never should anyone use Alligator as their
 global allocator when targeting a C stdlib system.
 See [Debugging](#debugging) for more.
 
-## Running Hello World
-A hello world program is provided which utilizes
-Alligator as the Rust global allocator.
+## Running Benchmarks
+A few programs are provided which utilizes Alligator:
 
-This program can be built as a Web Assembly program or
-as a host binary. The host binary is only used for
-debugging purposes, see [Debugging](#debugging).
+- `use-global` (Default): Performs a few heap allocations using Alligator as the programs Global Allocator
+- `alloc-all`: Performs more than one MiniPage's worth of allocations for each size class
+- `alloc-report`: (Wip) Performs benchmarks over a series of allocation sizes and outputs CSV rows (`benchmarks-record.sh` part of this, but wip at the moment)
 
-To run the hello world program with Wasmtime:
+Specify which benchmark to run via the `BENCH` environment variable in Make (ex., in the command line specify `BENCH=<benchmark name>` like so `make bench-run-wasm BENCH=alloc-all`).
 
-```
-make hello-world-run-wasm
-```
+This program can be built as a Web Assembly program or as a host binary. The host binary is only used for debugging purposes, see [Debugging](#debugging).
 
-This will automatically build the hello world if it is
-not up to date, to build it manually run:
+To run a benchmark program with Wasmtime:
 
 ```
-make hello-world-build-wasm
+make bench-run-wasm BENCH=use-global
+```
+
+This will automatically build a benchmark if it is not up to date, to build it manually run:
+
+```
+make bench-build-wasm BENCH=use-global
 ```
 
 The resulting Web Assembly is output as
 an `alligator.wasm` file.
+
+## Compile Time Features
+Compile time features can be provided to Cargo when building Alligator. This can enable features at compile time (no runtime cost).
+
+Available features:
+
+- `metrics` - Record statistics about allocation process. Results recorded to the `AllocMetrics` struct, which can be retrieved via the `AlligatorAlloc::metrics()` method. Additionally some debug information about why an allocation may have failed is available via the `AlligatorAlloc::alloc_failure_cause()` method and the `AllocFail` enum.
+
+Compile Alligator with features by specifying the `--features=<feature>` Cargo build option. If you are using Make specify via the Cargo build args variable `CARGO_BARGS`:
+
+```
+make your-make-target CARGO_BARGS+=--features=metrics
+```
 
 ## Debugging
 Due to the lack of debugging support for Web Assembly
@@ -104,7 +152,7 @@ like that of 32-bit libc systems (See [Debugging Targets](#debugging-targets)).
 To debug with lldb:
 
 ```
-make hello-world-debug-host
+make bench-debug-host BENCH=use-global
 ```
 
 Inside of lldb one can then debug the `alloc`
@@ -116,26 +164,34 @@ function, for instance, by running the command:
 ((lldb) br s -M alloc
 ```
 
+Or on line 679 of the `src/alloc/mod.rs` file:
+```
+((lldb) br set -f src/alloc/mod.rs -l 679
+```
+
 If you need to build the host binary run:
 
 ```
-make hello-world-build-host
+make bench-build-host BENCH=use-global
 ```
 
 And if you need to run the host binary:
 
 ```
-make hello-world-run-host
+make bench-run-host BENCH=use-global
 ```
 
 If debugging in Web Assembly is absolutely required
 lldb can be used with wasmtime:
 
 ```
-make hello-world-debug-wasm
+make bench-debug-wasm BENCH=use-global
 ```
 
 ## Fuzzing
+**Fuzzing is currently not working and needs to be fixed**  
+Initially fuzzing was completed on a 64-bit platform using a 64-bit binary. Now the binary is 32-bits, however development still takes place on a 64-bit platform. AFL++ and Hangover need to be compiled to 32-bits. This will be completed eventually.
+
 The [HangOver memory allocator fuzzer](https://github.com/emeryberger/hangover),
 which utilizes [AFL++](https://github.com/AFLplusplus/AFLplusplus#building-and-installing-afl), 
 is used to fuzz the Alligator memory allocator.
@@ -194,6 +250,9 @@ make c-test-build
 Then run `./c-test`.
 
 # Design
+## Memory Limit
+This allocator is designed to allocate no more than 2 GB of memory.
+
 ## Size Classes
 Alligator is a size class allocator. Allocated objects are put into size class
 buckets. Size classes buckets are in power of two increments of bytes. The
@@ -227,11 +286,9 @@ section. This header contains:
 In order to find free Segment indexes in constant time, a stack of free segment
 indexes will be maintained for the most recently used MiniPage of each
 size class. This will be stored in the program's stack memory area. This stack
-is called the free Vector. Each free vector can store up to 256 free segment
-indexes.
+is called the free segments stack. Each free segments vector can store `2^n` items per size class.
 
-For free segments smaller than size class `3` (8B) not all possible free indexes
-can be stored in this size. For size classes greater than `3` (8B) there will
-always be extra space in these free vectors. (The idea of dynamically sized
-stacks: so that there is no loss or waste of memory for smaller or bigger size
-classes, will be implemented soon).
+## Life Cycle of an Allocation
+The above sections describe core concepts in a vacuum, without context. This section aims to describe how core components work together to allocate and then free a segment of memory.
+
+[Alligator Life Cycle Presentation](./docs/alligator-life-cycle-presentation.pdf)

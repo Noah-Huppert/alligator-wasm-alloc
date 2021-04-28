@@ -1,9 +1,12 @@
 # Constants
 MAKE ?= make
 
+# ... Will be set when calling any benchmark target, defaults to use-global
+BENCH ?= use-global
+
 # ... Source files
 SRC_FILES_CORE ?= $(wildcard src/alloc/**)
-SRC_FILES_HELLO_WORLD ?= src/hello-world.rs ${SRC_FILES_CORE}
+SRC_FILES_BENCH ?= src/bench-${BENCH}.rs ${SRC_FILES_CORE}
 
 # ... Build outputs
 BUILD_OUT ?= ./target
@@ -25,8 +28,8 @@ AFL_CXX ?= ${AFL_DIR}/afl-c++
 AFL_FUZZ ?= ${AFL_DIR}/afl-fuzz
 
 # ... ... hello world
-HELLO_WORLD_BUILD_HOST_OUT ?= ${BUILD_OUT}/${TARGET_LIBC32}/debug/hello-world
-HELLO_WORLD_BUILD_WASM_OUT ?= ${BUILD_OUT}/${TARGET_WASM}/debug/hello-world.wasm
+BENCH_BUILD_HOST_OUT ?= ${BUILD_OUT}/${TARGET_LIBC32}/debug/bench-${BENCH}
+BENCH_BUILD_WASM_OUT ?= ${BUILD_OUT}/${TARGET_WASM}/debug/bench-${BENCH}.wasm
 
 # Just make a C binary which calls the Alligator
 # functions to ensure they work bare minimum.
@@ -37,7 +40,7 @@ c-test-build:
 # Build the alligator C dynamic library, used to fuzz
 liballigatorc-build: ${LIBALLIGATORC_BUILD_OUT}
 ${LIBALLIGATORC_BUILD_OUT}: src/clib.rs ${SRC_FILES_CORE} $(wildcard src/bin/**)
-	cargo build --lib --target ${TARGET_LIBC32}
+	cargo build --lib --target ${TARGET_LIBC32} ${CARGO_BARGS}
 	cargo run --bin generate-cheaders
 	mv ${LIBALLIGATORC_HEADER_FILE} ${LIBALLIGATORC_HEADER_OUT}
 
@@ -72,22 +75,22 @@ liballigatorc-fuzz: liballigatorc-build afl-build hangover-fuzzer-build
 		${HANGOVER_BUILD_OUT}"
 
 # Build hello world
-hello-world-build-wasm: ${SRC_FILES_HELLO_WORLD}
-	cargo build --bin hello-world --target ${TARGET_WASM}
-hello-world-build-host: ${SRC_FILES_HELLO_WORLD}
-	cargo build --bin hello-world --target ${TARGET_LIBC32}
+bench-build-wasm: ${SRC_FILES_BENCH}
+	cargo build --bin bench-${BENCH} --target ${TARGET_WASM} ${CARGO_BARGS}
+bench-build-host: ${SRC_FILES_BENCH}
+	cargo build --bin bench-${BENCH} --target ${TARGET_LIBC32} ${CARGO_BARGS}
 
 # Run hello world
-hello-world-run-wasm: hello-world-build-wasm
-	WASMTIME_BACKTRACE_DETAILS=1 wasmtime run ${HELLO_WORLD_BUILD_WASM_OUT}
-hello-world-run-host: hello-world-build-host
-	./${HELLO_WORLD_BUILD_HOST_OUT}
+bench-run-wasm: bench-build-wasm
+	WASMTIME_BACKTRACE_DETAILS=1 wasmtime run ${BENCH_BUILD_WASM_OUT} ${RARGS}
+bench-run-host: bench-build-host
+	./${BENCH_BUILD_HOST_OUT} ${RARGS}
 
 # Debug hello world
-hello-world-debug-wasm: hello-world-build-wasm
-	lldb -- wasmtime run -g ${HELLO_WORLD_BUILD_WASM_OUT}
-hello-world-debug-host: hello-world-build-host
-	rust-lldb ./${HELLO_WORLD_BUILD_HOST_OUT}
+bench-debug-wasm: bench-build-wasm
+	lldb -- wasmtime run -g ${BENCH_BUILD_WASM_OUT}
+bench-debug-host: bench-build-host
+	rust-lldb ./${BENCH_BUILD_HOST_OUT}
 
 # Remove build outputs
 clean:

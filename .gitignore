@@ -3,3 +3,6 @@ target/
 
 # C build
 c-test
+
+# Benchmarks output
+benchmarks-out/

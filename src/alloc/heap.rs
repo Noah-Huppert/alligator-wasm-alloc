@@ -1,4 +1,4 @@
-use cfg_if;
+use cfg_if::cfg_if;
 
 /// The size of one WASM page.
 pub const PAGE_BYTES: u32 = 65536;
@@ -24,7 +24,7 @@ pub trait HostHeap {
     unsafe fn base_ptr(&mut self) -> *mut u8;
 }
 
-cfg_if::cfg_if! {
+cfg_if! {
     if #[cfg(target_arch = "wasm32")] {
         use core::arch::wasm32::{memory_size,memory_grow};
 
