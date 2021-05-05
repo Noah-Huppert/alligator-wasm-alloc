@@ -32,12 +32,21 @@ const MINI_PAGE_TOTAL_BYTES_U32: u32 = MINI_PAGE_TOTAL_BYTES as u32;
 /// MINI_PAGE_TOTAL_BYTES as an f64
 const MINI_PAGE_TOTAL_BYTES_F64: f64 = MINI_PAGE_TOTAL_BYTES as f64;
 
+/// The smallest size class we will allocate.
+pub const MIN_SIZE_CLASS: u8 = 3;
+
 /// The largest size class we can allocate right now.
 /// Multi-page allocations are not supported yet.
-const MAX_SIZE_CLASS: u8 = 11;
+pub const MAX_SIZE_CLASS: u8 = 11;
 
 /// MAX_SIZE_CLASS but a usize
 const MAX_SIZE_CLASS_USIZE: usize = 11;
+
+/// The total number of size classes allocated. The + 1 is needed because MIN_SIZE_CLASS and MAX_SIZE_CLASS both start at 0. So to determine the count of this we need to add one.
+const NUM_SIZE_CLASSES: u8 = (MAX_SIZE_CLASS - MIN_SIZE_CLASS) + 1;
+
+/// The total number of size classes allocated as usize.
+const NUM_SIZE_CLASSES_USIZE: usize = NUM_SIZE_CLASSES as usize;
 
 cfg_if! {
     if #[cfg(feature = "metrics")] {
@@ -46,10 +55,10 @@ cfg_if! {
         #[derive(Copy, Clone, Debug)]
         pub struct AllocMetrics {
             /// Total number of allocations for each size class.
-            pub total_allocs: [u32; MAX_SIZE_CLASS_USIZE + 1],
+            pub total_allocs: [u32; NUM_SIZE_CLASSES_USIZE],
 
             /// Total number of deallocations for each size class.
-            pub total_deallocs: [u32; MAX_SIZE_CLASS_USIZE + 1],
+            pub total_deallocs: [u32; NUM_SIZE_CLASSES_USIZE],
 
             /// Total number of MiniPages used.
             pub total_minipages: u32,
@@ -66,8 +75,8 @@ cfg_if! {
             unsafe fn alloc(start_addr: *mut u8) -> (*mut AllocMetrics, *mut u8) {
                 // Allocate
                 let metrics_ptr = start_addr as *mut AllocMetrics;
-                (*metrics_ptr).total_allocs = [0; MAX_SIZE_CLASS_USIZE + 1];
-                (*metrics_ptr).total_deallocs = [0; MAX_SIZE_CLASS_USIZE + 1];
+                (*metrics_ptr).total_allocs = [0; NUM_SIZE_CLASSES_USIZE];
+                (*metrics_ptr).total_deallocs = [0; NUM_SIZE_CLASSES_USIZE];
                 (*metrics_ptr).total_minipages = 0;
                 (*metrics_ptr).heap_bytes_read = 0;
                 (*metrics_ptr).heap_bytes_write = 0;
@@ -96,7 +105,7 @@ struct AllocatorImpl<H> where H: HostHeap {
     heap: UnsafeCell<H>,
 
     /// Head of MiniPage header free list for each size class.
-    free_lists: [*mut MiniPageHeader; MAX_SIZE_CLASS_USIZE + 1],
+    free_lists: [*mut MiniPageHeader; NUM_SIZE_CLASSES_USIZE],
 
     /// The first MiniPage worth of space in the heap is reserved for this "meta page". It is used to store information which needs to be placed on the heap for the Allicator implementation. Some if allocated and None if not allocated yet.
     meta_page: Option<*mut MetaPage>,
@@ -108,13 +117,13 @@ struct AllocatorImpl<H> where H: HostHeap {
     next_minipage_addr: *mut u8,
 
     /// Total number of allocations for each size class which were performed from a reused MiniPage header.
-    total_alloc_reused: [u32; MAX_SIZE_CLASS_USIZE + 1],
+    total_alloc_reused: [u32; NUM_SIZE_CLASSES_USIZE],
 
     /// Total number of allocations for each size class which were performed from a newly allocated MiniPage header.
-    total_alloc_fresh: [u32; MAX_SIZE_CLASS_USIZE + 1],
+    total_alloc_fresh: [u32; NUM_SIZE_CLASSES_USIZE],
 
     /// Address of the current fresh MiniPage for each size class. null_mut() if there is not one.
-    fresh_minipages: [*mut MiniPageHeader; MAX_SIZE_CLASS_USIZE + 1],
+    fresh_minipages: [*mut MiniPageHeader; NUM_SIZE_CLASSES_USIZE],
 
     /// Cause of the failure.
     #[cfg(feature = "metrics")]
@@ -132,6 +141,9 @@ cfg_if! {
             /// We attempted to grow the host heap, from which we hand out allocations, and failed. We cannot recover from this. 
             HostGrowFail,
 
+            /// The size class determination logic wanted to allocate a size class which was too small.
+            SizeClassTooSmall,
+
             /// Big allocations are not supported yet, and the allocation requested a size that requires big allocations.
             BigAllocTODO,
 
@@ -147,10 +159,10 @@ cfg_if! {
 /// The first MiniPage of the heap will hold some metadata which we don't want / can't put in the AllocatorImpl stack object.
 struct MetaPage {
     /// Indexes of free MiniPages for each size class. The head of each list is the currently used MiniPage for that size class. The free_segments stack will track free indexes for this MiniPage. MiniPages are popped off these stacks when their free_segments stack is empty (aka when there are no free segments on the MiniPage).
-    free_minipages: [*mut UnsafeStack<*mut MiniPageHeader>; MAX_SIZE_CLASS_USIZE + 1], // + 1 bc MAX_SIZE_CLASS starts counting at 0
+    free_minipages: [*mut UnsafeStack<*mut MiniPageHeader>; NUM_SIZE_CLASSES_USIZE],
 
     /// Free segment indexes from the head of free_minipages for each size class. Allows us to avoid searching the MiniPageHeader bitmap for the most recently used MiniPage.
-    free_segments: [*mut UnsafeStack<u16>; MAX_SIZE_CLASS_USIZE + 1],
+    free_segments: [*mut UnsafeStack<u16>; NUM_SIZE_CLASSES_USIZE],
 
     /// Allocator metrics
     #[cfg(feature = "metrics")]
@@ -166,7 +178,7 @@ impl MetaPage {
         let mut next_ptr = page_ptr.offset(1) as *mut u8;
 
         // Setup free minipages stacks
-        for i in 0..=MAX_SIZE_CLASS {
+        for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
             let (stack, after_ptr) = UnsafeStack::<*mut MiniPageHeader>::alloc(
                 next_ptr,
                 (2_u32.pow(u32::from(i))).try_into().unwrap(),
@@ -176,7 +188,7 @@ impl MetaPage {
         }
 
         // Setup free segements stacks
-        for i in 0..=MAX_SIZE_CLASS {
+        for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
             let size_class = SizeClass::new(i);
             
             let (stack, after_ptr) = UnsafeStack::<u16>::alloc(
@@ -335,14 +347,20 @@ pub struct SizeClass {
 }
 
 impl SizeClass {
-    /// New size class from an exponent number.
+    /// New size class from an exponent number. Will normalize values smaller than MIN_SIZE_CLASS to be MIN_SIZE_CLASS.
     pub fn new(exp: u8) -> SizeClass {
+        let mut norm_exp = exp;
+        if norm_exp < MIN_SIZE_CLASS {
+            norm_exp = MIN_SIZE_CLASS;
+        }
+
+        
         SizeClass{
-            exp: exp,
+            exp: norm_exp,
         }
     }
 
-    /// Creates the size class required to fit a number of bytes.
+    /// Creates the size class required to fit a number of bytes. The resulting size class is normalized using SizeClass::new() to never be smaller than the smallest size class.
     pub fn new_from_bytes(bytes: u16) -> SizeClass {
         let fbytes = f32::from(bytes);
         // # Panics
@@ -350,9 +368,7 @@ impl SizeClass {
         let exp = fbytes.log2().ceil() as u32;
         let exp_u8 = u8::try_from(exp).unwrap();
 
-        SizeClass{
-            exp: exp_u8,
-        }
+        SizeClass::new(exp_u8)
     }
 
     /// Exponent as a usize, useful for indexing into arrays.
@@ -639,15 +655,15 @@ impl AllocatorImpl<HeapType> {
         did_init_heap: false,
         heap: UnsafeCell::new(heap::INIT),
         
-        free_lists: [null_mut(); MAX_SIZE_CLASS_USIZE+1],
+        free_lists: [null_mut(); NUM_SIZE_CLASSES_USIZE],
         meta_page: None,
         alloc_start_ptr: null_mut(),
             
         next_minipage_addr: null_mut(),
 
-        total_alloc_reused: [0; MAX_SIZE_CLASS_USIZE+1],
-        total_alloc_fresh: [0; MAX_SIZE_CLASS_USIZE+1],
-        fresh_minipages: [null_mut(); MAX_SIZE_CLASS_USIZE+1],
+        total_alloc_reused: [0; NUM_SIZE_CLASSES_USIZE],
+        total_alloc_fresh: [0; NUM_SIZE_CLASSES_USIZE],
+        fresh_minipages: [null_mut(); NUM_SIZE_CLASSES_USIZE],
 
         #[cfg(feature = "metrics")]
         failure: None,
@@ -850,6 +866,18 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
         // Determine size class of allocation
         let size_class = SizeClass::new_from_bytes(layout.size() as u16);
+
+        // Check if size class not too small
+        if size_class.exp < MIN_SIZE_CLASS {
+            // Size class is too small for allocator
+            cfg_if! {
+                if #[cfg(feature = "metrics")] {
+                    self.failure = Some(AllocFail::SizeClassTooSmall);
+                }
+            }
+            
+            return null_mut();
+        }
 
         // Check if not bigger than the largest MiniPage size class.
         // We don't do big alloc yet.
@@ -1136,10 +1164,10 @@ unsafe impl<H> Sync for AlligatorAlloc<H> where H: HostHeap {}
 #[derive(Copy, Clone, Debug)]
 pub struct FreshReusedStats {
     /// Total number of allocations for each size class which were performed from a reused MiniPage header.
-    pub total_alloc_reused: [u32; MAX_SIZE_CLASS_USIZE + 1],
+    pub total_alloc_reused: [u32; NUM_SIZE_CLASSES_USIZE],
 
     /// Total number of allocations for each size class which were performed from a newly allocated MiniPage header.
-    pub total_alloc_fresh: [u32; MAX_SIZE_CLASS_USIZE + 1],
+    pub total_alloc_fresh: [u32; NUM_SIZE_CLASSES_USIZE],
 }
 
 impl AlligatorAlloc<HeapType> {
