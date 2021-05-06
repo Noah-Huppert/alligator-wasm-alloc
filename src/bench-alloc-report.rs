@@ -1,5 +1,5 @@
 mod alloc;
-use alloc::{AlligatorAlloc,SizeClass};
+use alloc::{AlligatorAlloc,SizeClass,MIN_SIZE_CLASS,MAX_SIZE_CLASS};
 use alloc::heap::HeapType;
 use core::alloc::Layout;
 use std::alloc::GlobalAlloc;
@@ -68,7 +68,7 @@ fn print_usage() {
 
 USAGE
 
-    bench-alloc-report.rs [-h,--csv-header] <size class> <segments factor>
+    bench-alloc-report.rs [-h,--csv-header] <min size class> <max size class> <min pages> <max pages>
 
 OPTIONS
 
@@ -158,12 +158,14 @@ fn main() {
             let mut fresh_allocs = 0;
             let mut reused_allocs = 0;
             
-            for i in 0..=11 {
-                total_allocs += metrics.total_allocs[i];
-                total_deallocs += metrics.total_deallocs[i];
+            for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
+                let size_class = SizeClass::new(i);
+                
+                total_allocs += metrics.total_allocs[size_class.exp_as_idx()];
+                total_deallocs += metrics.total_deallocs[size_class.exp_as_idx()];
 
-                fresh_allocs += ratio.total_alloc_fresh[i];
-                reused_allocs += ratio.total_alloc_reused[i];
+                fresh_allocs += ratio.total_alloc_fresh[size_class.exp_as_idx()];
+                reused_allocs += ratio.total_alloc_reused[size_class.exp_as_idx()];
             }
 
             // Print results in a CSV table
