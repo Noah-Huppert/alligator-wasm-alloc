@@ -110,7 +110,8 @@ A few programs are provided which utilizes Alligator:
 
 - `use-global` (Default): Performs a few heap allocations using Alligator as the programs Global Allocator
 - `alloc-all`: Performs more than one MiniPage's worth of allocations for each size class
-- `alloc-report`: (Wip) Performs benchmarks over a series of allocation sizes and outputs CSV rows (`benchmarks-record.sh` part of this, but wip at the moment)
+- `alloc-report`: Performs benchmarks over a series of allocation sizes and outputs CSV rows (`benchmarks-record.sh` part of this, but wip at the moment)
+- `random-report`: Performs random allocations and outputs results as CSV rows, similar to `alloc-report`
 
 Specify which benchmark to run via the `BENCH` environment variable in Make (ex., in the command line specify `BENCH=<benchmark name>` like so `make bench-run-wasm BENCH=alloc-all`).
 
