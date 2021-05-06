@@ -179,11 +179,13 @@ impl MetaPage {
 
         // Setup free minipages stacks
         for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
+            let size_class = SizeClass::new(i);
+            
             let (stack, after_ptr) = UnsafeStack::<*mut MiniPageHeader>::alloc(
                 next_ptr,
-                (2_u32.pow(u32::from(i))).try_into().unwrap(),
+                size_class.segment_bytes(),
             );
-            (*page_ptr).free_minipages[usize::from(i)] = stack;
+            (*page_ptr).free_minipages[size_class.exp_as_idx()] = stack;
             next_ptr = after_ptr;
         }
 
@@ -195,7 +197,7 @@ impl MetaPage {
                 next_ptr,
                 size_class.segments_max_num(),
             );
-            (*page_ptr).free_segments[usize::from(i)] = stack;
+            (*page_ptr).free_segments[size_class.exp_as_idx()] = stack;
             next_ptr = after_ptr;
         }
         
@@ -371,9 +373,9 @@ impl SizeClass {
         SizeClass::new(exp_u8)
     }
 
-    /// Exponent as a usize, useful for indexing into arrays.
-    pub fn exp_usize(self) -> usize {
-        usize::from(self.exp)
+    /// Returns the exponent which indicates the size class as an index number which starts counting at 0. Used to access arrays where the 0 index is the MIN_SIZE_CLASS and the largest index is the MAX_SIZE_CLASS.
+    pub fn exp_as_idx(self) -> usize {
+        usize::from(self.exp - MIN_SIZE_CLASS)
     }
     
     /// Size of a segment in bytes.
@@ -733,12 +735,12 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                     first_free_found = Some(search_bit_i);
                 }
                 
-                (*(*meta_page).free_segments[size_class.exp_usize()]).push(search_bit_i);
+                (*(*meta_page).free_segments[size_class.exp_as_idx()]).push(search_bit_i);
 
                 cfg_if! {
                     if #[cfg(feature = "metrics")] {
                         // Pushing a free segment index onto an UnsafeStack on the heap
-                        (*(*meta_page).free_segments[size_class.exp_usize()]).record_push_cost(meta_page);
+                        (*(*meta_page).free_segments[size_class.exp_as_idx()]).record_push_cost(meta_page);
                     }
                 }
             }
@@ -774,8 +776,8 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
         // Determine what the next node will be
         let mut next: Option<*mut MiniPageHeader> = None;
-        if !self.free_lists[size_class.exp_usize()].is_null() {
-            next = Some(self.free_lists[size_class.exp_usize()]);
+        if !self.free_lists[size_class.exp_as_idx()].is_null() {
+            next = Some(self.free_lists[size_class.exp_as_idx()]);
         }
           
         // Create new node
@@ -792,21 +794,21 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // Set size class's free list head to new node
-        self.free_lists[size_class.exp_usize()] = node_ptr;
+        self.free_lists[size_class.exp_as_idx()] = node_ptr;
 
         // Record this MiniPage as having free segments
-        (*(*meta_page).free_minipages[size_class.exp_usize()]).push(node_ptr);
+        (*(*meta_page).free_minipages[size_class.exp_as_idx()]).push(node_ptr);
         (*node_ptr).on_free_minipages_stack = true;
 
         cfg_if! {
             if #[cfg(feature = "metrics")] {
                 // Pushing MiniPageHeader pointer onto an UnsafeStack on the heap
-                (*(*meta_page).free_minipages[size_class.exp_usize()]).record_push_cost(meta_page);
+                (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_push_cost(meta_page);
             }
         }
 
         // Set this as the current new fresh MiniPage
-        self.fresh_minipages[size_class.exp_usize()] = node_ptr;
+        self.fresh_minipages[size_class.exp_as_idx()] = node_ptr;
 
         // Increment the next MiniPageHeader address
         self.next_minipage_addr = self.next_minipage_addr.offset(isize::from(MINI_PAGE_TOTAL_BYTES));
@@ -894,14 +896,14 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         // Record metrics
         cfg_if! {
             if #[cfg(feature = "metrics")] {
-                (*(*meta_page).metrics).total_allocs[size_class.exp_usize()] += 1;
+                (*(*meta_page).metrics).total_allocs[size_class.exp_as_idx()] += 1;
             }
         }
 
         // Determine if we need to allocate from a fresh or reused MiniPage
-        let need_alloc_fresh = match self.total_alloc_reused[size_class.exp_usize()] > 0 {
+        let need_alloc_fresh = match self.total_alloc_reused[size_class.exp_as_idx()] > 0 {
             true => {
-                let fresh_reused_ratio = f64::from(self.total_alloc_fresh[size_class.exp_usize()]) / f64::from(self.total_alloc_reused[size_class.exp_usize()]);
+                let fresh_reused_ratio = f64::from(self.total_alloc_fresh[size_class.exp_as_idx()]) / f64::from(self.total_alloc_reused[size_class.exp_as_idx()]);
                 fresh_reused_ratio < FRESH_REUSED_RATIO
             },
             false => false,
@@ -932,18 +934,18 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             false => {
                 // Need to try and allocate from a reused minipage
                 // Find the most recently used MiniPage header for this size class
-                match (*(*meta_page).free_minipages[size_class.exp_usize()]).peek() {
+                match (*(*meta_page).free_minipages[size_class.exp_as_idx()]).peek() {
                     Some(ptr) => {
                         // There is a MiniPage with free segments for this size class
                         cfg_if! {
                             if #[cfg(feature = "metrics")] {
                                 // For peeking the free_minipages UnsafeStack on the heap
-                                (*(*meta_page).free_minipages[size_class.exp_usize()]).record_peek_cost(meta_page);
+                                (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_peek_cost(meta_page);
                             }
                         }
 
                         // If free segments stack size is 0 => the MiniPage we just peeked was just added and we haven't grabbed the free indexes from the stack yet
-                        if (*(*meta_page).free_segments[size_class.exp_usize()]).size == 0 {
+                        if (*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0 {
                             self.free_segments_update(ptr);
                         } 
                         
@@ -957,7 +959,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                         match self.add_minipage(size_class.exp) {
                             Some(ptr) => {
                                 // Put free indexes of segments on the segments stack for this new MiniPage
-                                assert!((*(*meta_page).free_segments[size_class.exp_usize()]).size == 0, "There should be no free segment indexes left here because we didn't find a free MiniPage");
+                                assert!((*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0, "There should be no free segment indexes left here because we didn't find a free MiniPage");
 
                                 self.free_segments_update(ptr);
                                 
@@ -980,16 +982,16 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         };
 
         assert!(!node_ptr.is_null(), "A MiniPageHeader should have been found at which to begin the search for a free segment to allocate");
-        assert!(!self.free_lists[size_class.exp_usize()].is_null(), "Since a MiniPageHeader to begin the search was found, the head of this size class's free free list should not be null");
+        assert!(!self.free_lists[size_class.exp_as_idx()].is_null(), "Since a MiniPageHeader to begin the search was found, the head of this size class's free free list should not be null");
 
         // Find the next free segment
-        let next_free_segment_idx: u16 = match (*(*meta_page).free_segments[size_class.exp_usize()]).pop() {
+        let next_free_segment_idx: u16 = match (*(*meta_page).free_segments[size_class.exp_as_idx()]).pop() {
             Some(idx) => {
                  // The free segments stack for the MiniPage had segments on it
                 cfg_if! {
                     if #[cfg(feature = "metrics")] {
                         // For popping a segment index of an UnsafeStack in the heap
-                        (*(*meta_page).free_segments[size_class.exp_usize()]).record_pop_cost(meta_page);
+                        (*(*meta_page).free_segments[size_class.exp_as_idx()]).record_pop_cost(meta_page);
                     }
                 }
                 
@@ -1012,24 +1014,24 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
         // Count allocation as either using a reused MiniPage or a fresh MiniPage
         // We must do this before the next block, where fresh_minipages is potentially reset.
-        if self.fresh_minipages[size_class.exp_usize()] == node_ptr {
-            self.total_alloc_fresh[size_class.exp_usize()] += 1;
+        if self.fresh_minipages[size_class.exp_as_idx()] == node_ptr {
+            self.total_alloc_fresh[size_class.exp_as_idx()] += 1;
         } else {
-            self.total_alloc_reused[size_class.exp_usize()] += 1;
+            self.total_alloc_reused[size_class.exp_as_idx()] += 1;
         }
 
         // Determine if the MiniPage we just got a free segment index from still has free space after this allocation
-        if (*(*meta_page).free_segments[size_class.exp_usize()]).size == 0 {
+        if (*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0 {
             // After this allocation this MiniPage will no longer have any free segments
             // Remove from free_minipages
-            (*(*meta_page).free_minipages[size_class.exp_usize()]).pop();
+            (*(*meta_page).free_minipages[size_class.exp_as_idx()]).pop();
             
             (*node_ptr).on_free_minipages_stack = false;
 
             cfg_if! {
                 if #[cfg(feature = "metrics")] {
                     // For popping a MiniPage of an UnsafeStack in the heap
-                    (*(*meta_page).free_minipages[size_class.exp_usize()]).record_pop_cost(meta_page);
+                    (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_pop_cost(meta_page);
 
                     // For setting the on_free_minipages_stack field on a MiniPageHeader in the heap
                     (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
@@ -1037,8 +1039,8 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             }
 
             // If this MiniPage was also considered "fresh" then unmark as fresh
-            if self.fresh_minipages[size_class.exp_usize()] == node_ptr {
-                self.fresh_minipages[size_class.exp_usize()] = null_mut();
+            if self.fresh_minipages[size_class.exp_as_idx()] == node_ptr {
+                self.fresh_minipages[size_class.exp_as_idx()] = null_mut();
             }
         }
 
@@ -1082,7 +1084,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         // Record metrics
         cfg_if! {
             if #[cfg(feature = "metrics")] {
-                (*(*meta_page).metrics).total_deallocs[size_class.exp_usize()] += 1;
+                (*(*meta_page).metrics).total_deallocs[size_class.exp_as_idx()] += 1;
             }
         }
 
@@ -1113,28 +1115,28 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // Push onto free segments stack if minipage is the current MiniPage
-        if (*(*meta_page).free_minipages[size_class.exp_usize()]).peek() == Some(minipage_header) {
-            (*(*meta_page).free_segments[size_class.exp_usize()]).push(segment.segment_idx_u16());
+        if (*(*meta_page).free_minipages[size_class.exp_as_idx()]).peek() == Some(minipage_header) {
+            (*(*meta_page).free_segments[size_class.exp_as_idx()]).push(segment.segment_idx_u16());
 
             cfg_if! {
                 if #[cfg(feature = "metrics")] {
                     // For peeking the free_minipages UnsafeStack on the heap
-                    (*(*meta_page).free_minipages[size_class.exp_usize()]).record_peek_cost(meta_page);
+                    (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_peek_cost(meta_page);
                     
                     // For pushing a free segment onto the free_segments UnsafeStack on the heap
-                    (*(*meta_page).free_segments[size_class.exp_usize()]).record_push_cost(meta_page);
+                    (*(*meta_page).free_segments[size_class.exp_as_idx()]).record_push_cost(meta_page);
                 }
             }
         } else if !(*minipage_header).on_free_minipages_stack {
             // Not pushed on minipages stack
             // First time we have deallocated from this MiniPage since it was full
             
-            (*(*meta_page).free_minipages[size_class.exp_usize()]).push(minipage_header);
+            (*(*meta_page).free_minipages[size_class.exp_as_idx()]).push(minipage_header);
             
             cfg_if! {
                 if #[cfg(feature = "metrics")] {
                     // For pushing a MiniPageHeader pointer onto the free_minipages UnsafeStack on the heap
-                    (*(*meta_page).free_minipages[size_class.exp_usize()]).record_push_cost(meta_page);
+                    (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_push_cost(meta_page);
                 }
             }
         }
