@@ -17,20 +17,22 @@ use std::process::exit;
 // #[global_allocator]
 static ALLOC: AlligatorAlloc<HeapType> = AlligatorAlloc::INIT;
 
-/// Allocate then free a specified number of segments for a size class. A certain number of segments will be randomly not freed until the end of the function, while the rest of the segments will be freed immediately after allocation.
+/// Allocate then free a specified number of segments for a size class. A certain number of segments will be randomly not freed until the end of the function, while the rest of the segments will be freed immediately after allocation. Returns the total number of bytes allocated.
 ///
 /// # Panics
 /// If the allocation or deallocation process fails.
 #[cfg(feature = "metrics")]
-unsafe fn alloc_segments(size_class_exp: u8, num_segments_factor: u32) {
+unsafe fn alloc_segments(size_class_exp: u8, num_segments: u32) -> usize {
     let size_class = SizeClass::new(size_class_exp);
+    let mut total_bytes: usize = 0;
     
     let mut free_later: Vec<*mut u8> = vec!();
 
-    for i in 0..u32::from(size_class.segments_max_num()) * num_segments_factor {
+    for i in 0..u32::from(size_class.segments_max_num()) * num_segments {
         
         // Create layout which requests the maximum number of bytes possible for this size class
-        let layout = match Layout::from_size_align(2_usize.pow(u32::from(size_class_exp)), 1) {
+        let alloc_bytes = 2_usize.pow(u32::from(size_class_exp));
+        let layout = match Layout::from_size_align(alloc_bytes, 1) {
             Ok(l) => l,
             Err(e) => panic!("error making Layout: {}", e),
         };
@@ -50,6 +52,8 @@ unsafe fn alloc_segments(size_class_exp: u8, num_segments_factor: u32) {
         } else {
             ALLOC.dealloc(ptr, layout);
         }
+
+        total_bytes += alloc_bytes;
     }
 
     // Free the memory we intentionally left laying around.
@@ -61,6 +65,8 @@ unsafe fn alloc_segments(size_class_exp: u8, num_segments_factor: u32) {
         
         ALLOC.dealloc(*ptr, layout);
     }
+
+    total_bytes
 }
 
 fn print_usage() {
@@ -68,7 +74,7 @@ fn print_usage() {
 
 USAGE
 
-    bench-alloc-report.rs [-h,--csv-header] <min size class> <max size class> <min pages> <max pages>
+    bench-alloc-report.rs [-h,--csv-header|--only-csv-header] <min size class> <max size class> <min pages> <max pages>
 
 OPTIONS
 
@@ -78,8 +84,8 @@ OPTIONS
 
 ARGUMENTS
 
-    Size class: <min> <max>    Inclusive range of size class exponents to allocate (n^<size class> bytes)
-    Pages: <min> <max>         Inclusive range of the number of MiniPages to allocate
+    Size class <min> <max>    Inclusive range of size class exponents to allocate (n^<size class> bytes)
+    Pages <min> <max>         Inclusive range of the number of MiniPages to allocate
 
 BEHAVIOR
 
@@ -108,6 +114,7 @@ fn main() {
     let mut args: Vec<String> = env::args().collect();
     args.reverse();
     let prog_name = args.pop().unwrap();
+    args.reverse();
 
     if args.len() == 0 {
         eprintln!("error: incorrect arguments");
@@ -115,29 +122,34 @@ fn main() {
         exit(1);
     }
 
-    if args[0] == "-h" {
+    if args[0] == "-h" || args[0] == "--help" {
         print_usage();
         exit(0);
     } else if args[0] == "--csv-header" || args[0] == "--only-csv-header" {
-        println!("size_class,total_minipages,heap_bytes_write,heap_bytes_read,total_allocs,total_deallocs,fresh_allocs,reused_allocs");
+        println!("total_alloc_bytes,size_class,page_counter,total_minipages,heap_bytes_write,heap_bytes_read,total_allocs,total_deallocs,fresh_allocs,reused_allocs");
 
         if args[0] == "--only-csv-header" {
             return exit(0);
         }
 
+        args.reverse();
         args.pop();
     }
-    
+
     let arg_size_class_min = args_pop_u8(&mut args, "<size class> minimum".to_string()).unwrap();
     let arg_size_class_max = args_pop_u8(&mut args, "<size class> maximum".to_string()).unwrap();
-    let arg_segments_factor_min = args_pop_u8(&mut args, "<pages> minimum".to_string()).unwrap();
-    let arg_segments_factor_max = args_pop_u8(&mut args, "<pages> maximum".to_string()).unwrap();
+    let arg_pages_min = args_pop_u8(&mut args, "<pages> minimum".to_string()).unwrap();
+    let arg_pages_max = args_pop_u8(&mut args, "<pages> maximum".to_string()).unwrap();
+
+    let mut page_counter = 0;
+    let mut total_alloc_bytes: usize = 0;
 
     for arg_size_class in arg_size_class_min..=arg_size_class_max {
-        for arg_segments_factor in arg_segments_factor_min..=arg_segments_factor_max {
+        for arg_pages in arg_pages_min..=arg_pages_max {
             // Allocate
             let (metrics, ratio) = unsafe {
-                alloc_segments(arg_size_class, u32::from(arg_segments_factor));
+                let alloced_bytes = alloc_segments(arg_size_class, u32::from(arg_pages));
+                total_alloc_bytes += alloced_bytes;
 
                 let metrics = match ALLOC.metrics() {
                     Some(m) => m,
@@ -169,8 +181,10 @@ fn main() {
             }
 
             // Print results in a CSV table
-            println!("{size_class},{total_minipages},{heap_bytes_write},{heap_bytes_read},{total_allocs},{total_deallocs},{fresh_allocs},{reused_allocs}",
+            println!("{total_alloc_bytes},{size_class},{page_counter},{total_minipages},{heap_bytes_write},{heap_bytes_read},{total_allocs},{total_deallocs},{fresh_allocs},{reused_allocs}",
+                     total_alloc_bytes=total_alloc_bytes,
                      size_class=arg_size_class,
+                     page_counter=page_counter,
                      total_minipages=metrics.total_minipages,
                      heap_bytes_write=metrics.heap_bytes_write,
                      heap_bytes_read=metrics.heap_bytes_read,
@@ -179,6 +193,9 @@ fn main() {
                      fresh_allocs=fresh_allocs,
                      reused_allocs=reused_allocs
             );
+
+            // Increment page counter
+            page_counter += 1;
         }
     }
 }
