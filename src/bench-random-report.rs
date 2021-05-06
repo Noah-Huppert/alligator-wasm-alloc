@@ -122,11 +122,11 @@ fn main() {
         args.pop();
     }
 
-    let arg_iterations = args_pop_u64(&mut args, "<iterations>".to_string()).unwrap();
     let arg_report_interval = match args.len() > 0 {
         true => args_pop_u64(&mut args, "<report interval>".to_string()).unwrap(),
         false => 100,
     };
+    let arg_iterations = args_pop_u64(&mut args, "<iterations>".to_string()).unwrap();
 
     let mut total_alloc_bytes: u32 = 0;
 
