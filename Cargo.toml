@@ -23,10 +23,6 @@ name = "bench-use-global"
 path = "src/bench-use-global.rs"
 
 [[bin]]
-name = "bench-alloc-report"
-path = "src/bench-alloc-report.rs"
-
-[[bin]]
 name = "bench-random-report"
 path = "src/bench-random-report.rs"
 
