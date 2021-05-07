@@ -86,6 +86,32 @@ cfg_if! {
 
                 return (metrics_ptr, next_ptr);
             }
+
+            /// Print a dot graphviz representation of the allocator's state.
+            unsafe fn dot_graph<H>(alloc: *mut AllocatorImpl<H>) -> String where H: HostHeap {
+                let mut out = String::from("digraph A {\n");
+                out += "alligator -> minipages;\n";
+                for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
+                    let size_class = SizeClass::new(i);
+                    let mut minipage_i = 0;
+                    let mut minipage_ptr = (*alloc).free_lists[size_class.exp_as_idx()];
+                    out += format!("minipages -> size_class_{};\n", i).as_str();
+                    
+                    while !minipage_ptr.is_null() {
+                        out += format!("size_class_{sz} -> minipage_{sz}_{mp};\n", sz=i, mp=minipage_i).as_str();
+                        
+                        // Iterate on next minipage
+                        minipage_i += 1;
+                        minipage_ptr = match (*minipage_ptr).next {
+                            Some(ptr) => ptr,
+                            None => null_mut(),
+                        };
+                    }
+                }
+                out += "}\n";
+
+                out
+            }
         }
     }
 }
@@ -1197,6 +1223,11 @@ impl AlligatorAlloc<HeapType> {
             /// Returns the allocation failure cause.
             pub unsafe fn alloc_failure_cause(&self) -> Option<AllocFail> {
                 (*self.alloc.get()).failure
+            }
+
+            /// Returns a dot graphviz representation of the allocator state.
+            pub unsafe fn dot_graph(&self) -> String {
+                AllocMetrics::dot_graph(self.alloc.get())
             }
         }
     }

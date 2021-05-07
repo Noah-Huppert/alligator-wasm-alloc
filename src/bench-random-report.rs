@@ -169,6 +169,9 @@ struct Args {
 
     /// Defines the range of size classes to allocate.
     alloc_range: Option<InclusiveRange<u8>>,
+
+    /// If program should print a dot graphviz representation of the allocator internal state.
+    print_dot_graph: Option<()>,
 }
 
 impl Args {
@@ -180,6 +183,7 @@ impl Args {
             report_interval: None,
             print_csv_header: None,
             alloc_range: None,
+            print_dot_graph: None,
         };
         
         while !args.is_empty() {
@@ -200,6 +204,8 @@ impl Args {
                     min: args.pop().unwrap().parse().unwrap(),
                     max: args.pop().unwrap().parse().unwrap(),
                 });
+            } else if arg == "-d" || arg == "dot-graph" {
+                parsed.print_dot_graph = Some(());
             } else {
                 panic!("unknown argument: {}", arg);
             }
@@ -230,13 +236,14 @@ impl Args {
 
 USAGE
 
-    bench-alloc-report.rs [-h] [-i,--max-iterations <num>] [-r,--report-interval <num>] [-c,--csv-header] [-C,--only-csv-header] [-a,--alloc <min> <max>]
+    bench-alloc-report.rs [-h] [-i,--max-iterations <num>] [-r,--report-interval <num>] [-d,--dot-graph] [-c,--csv-header] [-C,--only-csv-header] [-a,--alloc <min> <max>]
 
 OPTIONS
 
     -h                            Display help text
     -i,--max-iteration <num>      Number of iterations to run (default 1000)
     -r,--report-interval <num>    The interval on which to print CSV metric rows (default 100)
+    -d,--dot-graph                Print a dot graph of the allocator state.
     -a,--alloc <min> <max>        The, inclusive, minimum and maximum size class which can be randomly allocated (default {min_size_class} {max_size_class})
     -c,--csv-header               Print CSV header row first
     -C,--only-csv-header          Print CSV header row and exit
@@ -299,5 +306,11 @@ fn main() {
 
     unsafe {
         benchmark.cleanup();
+    }
+
+    if let Some(_v) = parsed_args.print_dot_graph {
+        unsafe {
+            println!("dot graph:\n{}", ALLOC.dot_graph());
+        }
     }
 }
