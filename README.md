@@ -254,39 +254,40 @@ Then run `./c-test`.
 This allocator is designed to allocate no more than 2 GB of memory.
 
 ## Size Classes
-Alligator is a size class allocator. Allocated objects are put into size class
-buckets. Size classes buckets are in power of two increments of bytes. The
-smallest size class is `0` aka `2^0 = 1B`. The largest size class is `11`
-aka `2^11 = 2048B`.
+Alligator is a size class allocator. Allocated objects are put into size class buckets. Size classes buckets are in power of two increments of bytes.
+
+The smallest size class is `3` aka `2^3 = 8 bytes`. Smaller allocations will use this minimum size class. The largest size class is `11` aka `2^11 = 2048 bytes`. Larger allocations will use [Big Allocation](#big-allocation).
 
 ## MiniPages
-Alligator implements a less complex version of MiniHeaps and free Vectors from
-the [MESH allocator whitepaper](https://raw.githubusercontent.com/plasma-umass/Mesh/master/mesh-pldi19-powers.pdf).
-To avoid confusion between the two (as Alligator does not implement much 
-functionality from the MESH paper's MiniHeaps) these will be called MiniPages
-in alligator.
+For allocations smaller than the maximum size class of `11` (`2^11 = 2048 bytes`) the MiniPage allocation technique is used.
 
-MiniPages are 2kB sections of memory, from which same size class allocations are
-made.
+Alligator implements a less complex version of MiniHeaps and free Vectors from the [MESH allocator whitepaper](https://raw.githubusercontent.com/plasma-umass/Mesh/master/mesh-pldi19-powers.pdf). To avoid confusion between the two (as Alligator does not implement much functionality from the MESH paper's MiniHeaps) these will be called MiniPages in alligator.
 
-Since all objects in a MiniPage heap section will be the same size, we can
-refer to them by their index. These uniformly sized pieces of the MiniPage
-memory section will be called Segments.
+MiniPages are 2 kilobyte sections of memory, from which same size class allocations are made.
 
-Each MiniPage stores a small header within the heap right before the 2kB memory
-section. This header contains: 
+Since all objects in a MiniPage heap section will be the same size, we can refer to them by their index. These uniformly sized pieces of the MiniPage memory section will be called Segments.
+
+Each MiniPage stores a small header within the heap right before the 2kB memory section. This header contains: 
 
 - Size class (1B)
 - Bit-packed Segment free list (256B)
-  - Right now this is constantly sized
-  - In the future I would like to make the size depend on the size class according to this formula
-  `ceiling(2kB / (2^size_class))` bits. The number of bits is rounded up to the
-  nearest increment of 8, as to align the free list on 1 byte addresses.
 
-In order to find free Segment indexes in constant time, a stack of free segment
-indexes will be maintained for the most recently used MiniPage of each
-size class. This will be stored in the program's stack memory area. This stack
-is called the free segments stack. Each free segments vector can store `2^n` items per size class.
+In order to find free MiniPages and segments in constant time a set of stacks is used for each size class. Popping from one of these stacks returns the next free MiniPage pointer or segment index. There is a stack for MiniPages and segments for each size class, which can hold `2^n` items (`n` = size class).
+
+## MetaPage
+The first bit of the heap is used to store metadata about the allocator state. This area is called the MetaPage. It will be lazily allocated.
+
+It holds the free MiniPage and segment stacks mentioned in the [MiniPages](#minipages) section. As well as any metrics if the `metrics` feature is enabled.
+
+## Big Allocation
+For allocations larger than the maximum size class of `11` (`2^11 = 2048 bytes`) a different allocation technique is used.
+
+As their name suggests, MiniPages are used for allocations which can fit in under 2 kilobytes. The benefit of MiniPages is being able to know their size is constant, making larger versions to accommodate larger than 2 kilobyte allocations would not work.
+
+Big allocation uses a standard embedded free linked list. Segments of memory are allocated in 2 kilobyte intervals. This allows big allocations to be placed alongside 
+MiniPages.
+
+Once a big allocation segment has been allocated it doesn't get removed from use. However it can be re-used as a big allocation segment. 
 
 ## Life Cycle of an Allocation
 The above sections describe core concepts in a vacuum, without context. This section aims to describe how core components work together to allocate and then free a segment of memory.

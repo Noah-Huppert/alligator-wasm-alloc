@@ -677,6 +677,28 @@ impl MiniPageSegment {
     }
 }
 
+/// Big allocations (gt MAX_SIZE_CLASS) are allocated to the nearest aligned free heap. This header is placed before allocated memory segment. Holds metadata about the allocation.
+struct BigAllocHeader {
+    /// Next BigAllocHeader. Guaranteed to be ordered by memory start address. None if there is nothing after.
+    next: Option<*mut BigAllocHeader>,
+    
+    /// True if the big alloc segment is free. False if used.
+    free: bool,
+
+    /// The size of the allocated segment of memory directly after this header. In bytes.
+    size_bytes: u32,
+}
+
+impl BigAllocHeader {
+    /// Allocate a new BigAllocHeader at the location start_addr.
+    unsafe fn alloc(start_addr: *mut u8, next: Option<*mut BigAllocHeader>, size_bytes: u32) {
+        let ptr = start_addr as *mut BigAllocHeader;
+        (*ptr).next = next;
+        (*ptr).free = false; // = allocated
+        (*ptr).size_bytes = size_bytes;
+    }
+}
+
 impl AllocatorImpl<HeapType> {
     /// Initialized allocator structure with a WASMHostHeap.
     pub const INIT: AllocatorImpl<HeapType> = AllocatorImpl{
@@ -907,23 +929,16 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             return null_mut();
         }
 
-        // Check if not bigger than the largest MiniPage size class.
-        // We don't do big alloc yet.
-        if size_class.exp > MAX_SIZE_CLASS {
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    self.failure = Some(AllocFail::BigAllocTODO);
-                }
-            }
-            
-            return null_mut();
-        }
-
         // Record metrics
         cfg_if! {
             if #[cfg(feature = "metrics")] {
                 (*(*meta_page).metrics).total_allocs[size_class.exp_as_idx()] += 1;
             }
+        }
+
+        // Check if not bigger than the largest MiniPage size class. If the case, we must use big alloc.
+        if size_class.exp > MAX_SIZE_CLASS {
+            // TODO: Big allocate here
         }
 
         // Determine if we need to allocate from a fresh or reused MiniPage
