@@ -94,7 +94,7 @@ cfg_if! {
                 for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
                     let size_class = SizeClass::new(i);
                     let mut minipage_i = 0;
-                    let mut minipage_ptr = (*alloc).free_lists[size_class.exp_as_idx()];
+                    let mut minipage_ptr = (*alloc).minipage_lists[size_class.exp_as_idx()];
                     out += format!("minipages -> size_class_{};\n", i).as_str();
                     
                     while !minipage_ptr.is_null() {
@@ -131,7 +131,7 @@ struct AllocatorImpl<H> where H: HostHeap {
     heap: UnsafeCell<H>,
 
     /// Head of MiniPage header free list for each size class.
-    free_lists: [*mut MiniPageHeader; NUM_SIZE_CLASSES_USIZE],
+    minipage_lists: [*mut MiniPageHeader; NUM_SIZE_CLASSES_USIZE],
 
     /// The first MiniPage worth of space in the heap is reserved for this "meta page". It is used to store information which needs to be placed on the heap for the Allicator implementation. Some if allocated and None if not allocated yet.
     meta_page: Option<*mut MetaPage>,
@@ -683,7 +683,7 @@ impl AllocatorImpl<HeapType> {
         did_init_heap: false,
         heap: UnsafeCell::new(heap::INIT),
         
-        free_lists: [null_mut(); NUM_SIZE_CLASSES_USIZE],
+        minipage_lists: [null_mut(); NUM_SIZE_CLASSES_USIZE],
         meta_page: None,
         alloc_start_ptr: null_mut(),
             
@@ -780,7 +780,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         first_free_found
     }
 
-    /// Setup a new MiniPageHead. Updates the next_minipage_addr, the free_lists head, MetaPage.free_minipages, and fresh_minipages for the size class. Always adds the new MiniPageHead to the head of free_lists.
+    /// Setup a new MiniPageHead. Updates the next_minipage_addr, the minipage_lists head, MetaPage.free_minipages, and fresh_minipages for the size class. Always adds the new MiniPageHead to the head of minipage_lists.
     /// Returns Option with the created MiniPage header if there was free space in the heap.
     /// Returns None if there is no space in the heap. This is fatal.
     unsafe fn add_minipage(&mut self, size_class_exp: u8) -> Option<*mut MiniPageHeader> {
@@ -802,8 +802,8 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
         // Determine what the next node will be
         let mut next: Option<*mut MiniPageHeader> = None;
-        if !self.free_lists[size_class.exp_as_idx()].is_null() {
-            next = Some(self.free_lists[size_class.exp_as_idx()]);
+        if !self.minipage_lists[size_class.exp_as_idx()].is_null() {
+            next = Some(self.minipage_lists[size_class.exp_as_idx()]);
         }
           
         // Create new node
@@ -820,7 +820,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // Set size class's free list head to new node
-        self.free_lists[size_class.exp_as_idx()] = node_ptr;
+        self.minipage_lists[size_class.exp_as_idx()] = node_ptr;
 
         // Record this MiniPage as having free segments
         (*(*meta_page).free_minipages[size_class.exp_as_idx()]).push(node_ptr);
@@ -1008,7 +1008,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         };
 
         assert!(!node_ptr.is_null(), "A MiniPageHeader should have been found at which to begin the search for a free segment to allocate");
-        assert!(!self.free_lists[size_class.exp_as_idx()].is_null(), "Since a MiniPageHeader to begin the search was found, the head of this size class's free free list should not be null");
+        assert!(!self.minipage_lists[size_class.exp_as_idx()].is_null(), "Since a MiniPageHeader to begin the search was found, the head of this size class's free free list should not be null");
 
         // Find the next free segment
         let next_free_segment_idx: u16 = match (*(*meta_page).free_segments[size_class.exp_as_idx()]).pop() {
