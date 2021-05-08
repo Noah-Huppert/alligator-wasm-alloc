@@ -545,10 +545,9 @@ impl MiniPageMeta {
     /// # Safety
     /// TODO
     unsafe fn get_header_ptr(self, base_ptr: *mut u8) -> *mut MiniPageHeader {
-        let tb = MINI_PAGE_TOTAL_BYTES_U32;
         let idx = self.page_idx_u32();
         
-        let header_addr = AllocAddr::new(idx * tb);
+        let header_addr = AllocAddr::new(idx * MINI_PAGE_TOTAL_BYTES_U32);
 
         header_addr.as_ptr(base_ptr) as *mut MiniPageHeader
     }

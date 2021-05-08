@@ -280,16 +280,17 @@ The first bit of the heap is used to store metadata about the allocator state. T
 It holds the free MiniPage and segment stacks mentioned in the [MiniPages](#minipages) section. As well as any metrics if the `metrics` feature is enabled.
 
 ## Big Allocation
-For allocations larger than the maximum size class of `11` (`2^11 = 2048 bytes`) a different allocation technique is used.
+For allocations larger than the maximum size class of `11` (`2^11 = 2048 bytes`) the big allocation technique is used.
 
-As their name suggests, MiniPages are used for allocations which can fit in under 2 kilobytes. The benefit of MiniPages is being able to know their size is constant, making larger versions to accommodate larger than 2 kilobyte allocations would not work.
+Big allocation's free list is a linked list of `BigAllocHeader` in the heap. Segments of memory are allocated in ~2 kilobyte intervals (precise interval is the size of a `MiniPageHeader` plus 2 kilobytes). This is crucial for compatibility with MiniPage logic.
 
-Big allocation uses a standard embedded free linked list. Segments of memory are allocated in 2 kilobyte intervals. This allows big allocations to be placed alongside 
-MiniPages.
+Once a big allocation segment has been de-allocated the underlying heap memory does not get returned to the host. Instead the big allocation segment is marked as free, and can be re-used in future big allocations.
 
-Once a big allocation segment has been allocated it doesn't get removed from use. However it can be re-used as a big allocation segment. 
+Big allocations are constant time via the use of a free big allocation stack (similar to MiniPages). Big de-allocations are O(n) via a linear search on the free linked list.
+
+MiniPages are not used for these allocations because MiniPage logic cannot accommodate allocations larger than 2 kilobytes. Additionally MiniPage logic relies on constant MiniPage size, allowing pointer math to used find MiniPage headers in the heap without any searching. If MiniPages of different sizes were created for big allocations logic used for normal MiniPage allocations would break. Big allocations are provisioned in intervals of ~2 kilobytes for the same reason.
 
 ## Life Cycle of an Allocation
-The above sections describe core concepts in a vacuum, without context. This section aims to describe how core components work together to allocate and then free a segment of memory.
+This presentation provides a rough outline of the design components working together. It is not currently up to date.
 
 [Alligator Life Cycle Presentation](./docs/alligator-life-cycle-presentation.pdf)
