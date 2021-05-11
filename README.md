@@ -240,7 +240,7 @@ make c-test-build
 Then run `./c-test`.
 
 # Design
-Alligator attempts to perform allocations and de-allocations memory in constant time, with the goal of being well suited for real time WASM applications.
+Alligator attempts to perform allocations and de-allocations of memory in constant time, with the goal of being well suited for real time WASM applications.
 
 ## Memory Limit
 This allocator is designed to allocate no more than 2 GB of memory.
