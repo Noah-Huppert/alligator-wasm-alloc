@@ -1,5 +1,5 @@
 # Contributors
-The Alligator WASM Allocator was created in an undergraduate independent study at the University of Massachusetts Amherst.
+The Alligator WASM Allocator was created in an undergraduate computer science independent study at the University of Massachusetts Amherst.
 
 Contributors:
 
