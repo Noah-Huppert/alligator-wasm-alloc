@@ -720,7 +720,11 @@ impl BigAllocHeader {
     /// Determine the size_bytes field value which must be used in order to fullfill an allocation request for alloc_bytes. Returns (size_bytes, interval). The returned number of bytes will make sure that the big allocation's total size (header + allocated segment) is some interval of MINI_PAGE_TOTAL_BYTES. This returned bytes value should be used as the size_bytes field in a BigAllocHeader. The returned interval will indicate the total number of bytes the big allocation will take up, the units will be intervals of MINI_PAGE_TOTAL_BYTES.
     fn compute_size(alloc_bytes: usize) -> (u32, u32) {
         // Find the minimum amount of space required for the allocation. This includes the BigAllocHeader.
-        let min_bytes = size_of::<BigAllocHeader>() + alloc_bytes;
+        // # Panics
+        // Shouldn't panic because:
+        // - program only works with 32 bit addresses => usize is 32 bits
+        // - usize is 32 bits => cast to u32 shouldn't fail
+        let min_bytes = (size_of::<BigAllocHeader>() + alloc_bytes) as u32;
 
         // Determine the closest interval of MINI_PAGE_TOTAL_BYTES to required_bytes.
         // # Panics
@@ -1008,7 +1012,11 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                     (*big_ptr).size_bytes = size_bytes;
                     
                     self.big_alloc_head = Some(big_ptr);
-                    self.next_minipage_addr = self.next_minipage_addr.offset(isize::from(interval) * MINI_PAGE_TOTAL_BYTES_ISIZE);
+                    // # Panics
+                    // Shouldn't panic because:
+                    // - program only works with 32 bit addresses => isize will be 32 bits
+                    // - interval is u32 => cast to i32 shouldn't panic
+                    self.next_minipage_addr = self.next_minipage_addr.offset((interval as isize) * MINI_PAGE_TOTAL_BYTES);
 
                     big_ptr
                 },
