@@ -282,7 +282,7 @@ It holds the free MiniPage and segment stacks mentioned in the [MiniPages](#mini
 ## Big Allocation
 For allocations larger than the maximum size class of `11` (`2^11 = 2048 bytes`) the big allocation technique is used.
 
-Big allocation's free list is a linked list of `BigAllocHeader` in the heap. Segments of memory are allocated in ~2 kilobyte intervals (precise interval is the size of a `MiniPageHeader` plus 2 kilobytes). This is crucial for compatibility with MiniPage logic.
+Big allocation's free list is a linked list of `BigAllocHeader`s embedded in the heap. Segments of memory are allocated in ~2 kilobyte intervals (precise interval is the size of a `MiniPageHeader` plus 2 kilobytes). This is crucial for compatibility with MiniPage logic.
 
 Once a big allocation segment has been de-allocated the underlying heap memory does not get returned to the host. Instead the big allocation segment is marked as free, and can be re-used in future big allocations.
 

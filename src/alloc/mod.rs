@@ -32,6 +32,12 @@ const MINI_PAGE_TOTAL_BYTES_U32: u32 = MINI_PAGE_TOTAL_BYTES as u32;
 /// MINI_PAGE_TOTAL_BYTES as an f64
 const MINI_PAGE_TOTAL_BYTES_F64: f64 = MINI_PAGE_TOTAL_BYTES as f64;
 
+/// Size of the BigAllocHeader.
+const BIG_ALLOC_HEADER_SIZE: usize = size_of::<BigAllocHeader>();
+
+/// Size of the BigAllocHeader as a u32.
+const BIG_ALLOC_HEADER_SIZE_U32: u32 = BIG_ALLOC_HEADER_SIZE as u32;
+
 /// The smallest size class we will allocate.
 pub const MIN_SIZE_CLASS: u8 = 3;
 
@@ -47,6 +53,12 @@ const NUM_SIZE_CLASSES: u8 = (MAX_SIZE_CLASS - MIN_SIZE_CLASS) + 1;
 
 /// The total number of size classes allocated as usize.
 const NUM_SIZE_CLASSES_USIZE: usize = NUM_SIZE_CLASSES as usize;
+
+/// The maximum number of free minipages each size class's free minipages stack will be able to hold.
+const FREE_MINIPAGES_STACK_SIZE: u16 = 100;
+
+/// The maximum number of free big allocation headers to store in the free big allocation headers stack.
+const FREE_BIG_ALLOC_STACK_SIZE: u16 = 100;
 
 cfg_if! {
     if #[cfg(feature = "metrics")] {
@@ -133,6 +145,9 @@ struct AllocatorImpl<H> where H: HostHeap {
     /// Head of MiniPage header free list for each size class.
     minipage_lists: [*mut MiniPageHeader; NUM_SIZE_CLASSES_USIZE],
 
+    /// Head of big allocation header free list.
+    big_alloc_head: Option<*mut BigAllocHeader>,
+
     /// The first MiniPage worth of space in the heap is reserved for this "meta page". It is used to store information which needs to be placed on the heap for the Allicator implementation. Some if allocated and None if not allocated yet.
     meta_page: Option<*mut MetaPage>,
 
@@ -190,6 +205,9 @@ struct MetaPage {
     /// Free segment indexes from the head of free_minipages for each size class. Allows us to avoid searching the MiniPageHeader bitmap for the most recently used MiniPage.
     free_segments: [*mut UnsafeStack<u16>; NUM_SIZE_CLASSES_USIZE],
 
+    /// Free big allocation headers.
+    free_big_allocs: *mut UnsafeStack<*mut BigAllocHeader>,
+
     /// Allocator metrics
     #[cfg(feature = "metrics")]
     metrics: *mut AllocMetrics,
@@ -209,7 +227,7 @@ impl MetaPage {
             
             let (stack, after_ptr) = UnsafeStack::<*mut MiniPageHeader>::alloc(
                 next_ptr,
-                size_class.segment_bytes(),
+                FREE_MINIPAGES_STACK_SIZE,
             );
             (*page_ptr).free_minipages[size_class.exp_as_idx()] = stack;
             next_ptr = after_ptr;
@@ -224,6 +242,16 @@ impl MetaPage {
                 size_class.segments_max_num(),
             );
             (*page_ptr).free_segments[size_class.exp_as_idx()] = stack;
+            next_ptr = after_ptr;
+        }
+
+        // Setup free big alloc headers stack
+        {
+            let (stack, after_ptr) = UnsafeStack::<*mut BigAllocHeader>::alloc(
+                next_ptr,
+                FREE_BIG_ALLOC_STACK_SIZE,
+            );
+            (*page_ptr).free_big_allocs = stack;
             next_ptr = after_ptr;
         }
         
@@ -689,12 +717,24 @@ struct BigAllocHeader {
 }
 
 impl BigAllocHeader {
-    /// Allocate a new BigAllocHeader at the location start_addr.
-    unsafe fn alloc(start_addr: *mut u8, next: Option<*mut BigAllocHeader>, size_bytes: u32) {
-        let ptr = start_addr as *mut BigAllocHeader;
-        (*ptr).next = next;
-        (*ptr).free = false; // = allocated
-        (*ptr).size_bytes = size_bytes;
+    /// Determine the size_bytes field value which must be used in order to fullfill an allocation request for alloc_bytes. Returns (size_bytes, interval). The returned number of bytes will make sure that the big allocation's total size (header + allocated segment) is some interval of MINI_PAGE_TOTAL_BYTES. This returned bytes value should be used as the size_bytes field in a BigAllocHeader. The returned interval will indicate the total number of bytes the big allocation will take up, the units will be intervals of MINI_PAGE_TOTAL_BYTES.
+    fn compute_size(alloc_bytes: usize) -> (u32, u32) {
+        // Find the minimum amount of space required for the allocation. This includes the BigAllocHeader.
+        let min_bytes = size_of::<BigAllocHeader>() + alloc_bytes;
+
+        // Determine the closest interval of MINI_PAGE_TOTAL_BYTES to required_bytes.
+        // # Panics
+        // Shouldn't panic because:
+        // - Program only works with 32 bit addresses => usize is 32 bits
+        // - f64 from 32 bit address should not panic
+        // - division and ceiling equation only operates on 32 bit input values => output value should be 32 bits
+        let interval_mult = (f64::try_from(min_bytes).unwrap() / MINI_PAGE_TOTAL_BYTES_F64).ceil() as u32;
+
+        let required_bytes = interval_mult * MINI_PAGE_TOTAL_BYTES_U32;
+        
+        let size_bytes = required_bytes - BIG_ALLOC_HEADER_SIZE_U32;
+
+        return (size_bytes, interval_mult);
     }
 }
 
@@ -705,6 +745,7 @@ impl AllocatorImpl<HeapType> {
         heap: UnsafeCell::new(heap::INIT),
         
         minipage_lists: [null_mut(); NUM_SIZE_CLASSES_USIZE],
+        big_alloc_head: None,
         meta_page: None,
         alloc_start_ptr: null_mut(),
             
@@ -918,7 +959,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
         // Check if size class not too small
         if size_class.exp < MIN_SIZE_CLASS {
-            // Size class is too small for allocator
+            // Size class is too small for allocator. We check this because the SizeClass structure is supposed to smartly round up smaller size classes to the smallest size class. If it doesn't do this then all logic in the program will use smaller than allowed size classes.
             cfg_if! {
                 if #[cfg(feature = "metrics")] {
                     self.failure = Some(AllocFail::SizeClassTooSmall);
@@ -937,7 +978,46 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
         // Check if not bigger than the largest MiniPage size class. If the case, we must use big alloc.
         if size_class.exp > MAX_SIZE_CLASS {
-            // TODO: Big allocate here
+            // Try and find a free big alloc segment, or allocate a new one
+            let big_ptr = match (*(*meta_page).free_big_allocs).pop() {
+                Some(big_ptr) => {
+                    // Found a free big alloc header
+                    cfg_if! {
+                        if #[cfg(feature = "metrics")] {
+                            (*(*meta_page).free_big_allocs).record_pop_metrics(meta_page);
+                        }
+                    }
+                    
+                    (*big_ptr).free = false; // allocated
+                    
+                    big_ptr
+                },
+                None => {
+                    // No free big alloc headers, must allocate one
+                    cfg_if! {
+                        if #[cfg(feature = "metrics")] {
+                            (*(*meta_page).metrics).heap_bytes_write += size_of::<BigAllocHeader>();
+                        }
+                    }
+                    
+                    let big_ptr = self.next_minipage_addr as *mut BigAllocHeader;
+                    (*big_ptr).next = self.big_alloc_head;
+                    (*big_ptr).free = false; // allocated
+
+                    let (size_bytes, interval) = BigAllocHeader::compute_size(layout.size());
+                    (*big_ptr).size_bytes = size_bytes;
+                    
+                    self.big_alloc_head = Some(big_ptr);
+                    self.next_minipage_addr = self.next_minipage_addr.offset(isize::from(interval) * MINI_PAGE_TOTAL_BYTES_ISIZE);
+
+                    big_ptr
+                },
+            };
+
+            // Compute the allocated address
+            let alloc_addr = big_ptr.offset(1) as *mut u8;
+            
+            return alloc_addr;
         }
 
         // Determine if we need to allocate from a fresh or reused MiniPage
