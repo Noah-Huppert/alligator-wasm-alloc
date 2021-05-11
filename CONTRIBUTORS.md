@@ -5,4 +5,4 @@ Contributors:
 
 - **Noah Huppert**: Lead developer
 - **Emery Berger**: UMass Computer Science Faculty Advisor for the project
-  - The [PLASMA](https://raw.githubusercontent.com/plasma-umass/Mesh/master/mesh-pldi19-powers.pdf) paper was influential in the design off the constant time allocation strategy Alligator utilizes.
+  - The [MESH](https://raw.githubusercontent.com/plasma-umass/Mesh/master/mesh-pldi19-powers.pdf) paper was influential in the design off the constant time allocation strategy Alligator utilizes.
