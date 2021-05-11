@@ -13,6 +13,13 @@ Rust Web Assembly allocator.
   - [Debugging](#debugging)
   - [Fuzzing](#fuzzing)
 - [Design](#design)
+  - [Time Complexity](#time-complexity)
+  - [Memory Limit](#memory-limit)
+  - [Size Classes](#size-classes)
+  - [MiniPages](#minipages)
+  - [MetaPage](#metapage)
+  - [Big Allocation](#big-allocation)
+  - [Life Cycle of an Allocation](#life-cycle-of-an-allocation](#life-cycle-of-an-allocation)
 
 # Overview
 Alligator is a _real time_ Web Assembly memory allocator for Rust. Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
@@ -242,8 +249,23 @@ Then run `./c-test`.
 # Design
 Alligator attempts to perform allocations and de-allocations of memory in constant time, with the goal of being well suited for real time WASM applications.
 
+## Time Complexity
+Allocations and de-allocations for under 2 KB of memory are constant time. This is done using [MiniPages](#minipages). Allocations and de-allocations above this size use [Big Allocation](#big-allocation) and are linear time.
+
+The maximum size for constant time memory operations is constrained by the maximum size of a MiniPage. This size was chosen to try and pick a size which encompasses most allocations. The allocator is written so that this size can be changed via constant variables.
+
 ## Memory Limit
-This allocator is designed to allocate no more than 2 GB of memory.
+This allocator is designed to allocate no more than 4 GB of memory. This is due to limits set by the WASM specification:
+
+> The maximum number of pages of a memory is 65536.
+
+[WASM Specification JS implementation limits section](https://webassembly.github.io/spec/js-api/index.html#webassemblymemory-constructor).
+
+Alligator has constants which set the maximum size:
+
+- `MAX_HOST_PAGES`
+
+TODO: MAX_HOST_PAGES is currently incorrectly set to `200`.
 
 ## Size Classes
 Alligator is a size class allocator. Allocated objects are put into size class buckets. Size classes buckets are in power of two increments of bytes.
@@ -278,7 +300,7 @@ Big allocation's free list is a linked list of `BigAllocHeader`s embedded in the
 
 Once a big allocation segment has been de-allocated the underlying heap memory does not get returned to the host. Instead the big allocation segment is marked as free, and can be re-used in future big allocations.
 
-Big allocations are constant time via the use of a free big allocation stack (similar to MiniPages). Big de-allocations are O(n) via a linear search on the free linked list.
+Big allocations and de-allocations are O(n) via a linear search on the free linked list (`n` = number of big allocation items in the free linked list). Allocations will always try to use an existing free big allocation node using a first fit policy.
 
 MiniPages are not used for these allocations because MiniPage logic cannot accommodate allocations larger than 2 kilobytes. Additionally MiniPage logic relies on constant MiniPage size, allowing pointer math to used find MiniPage headers in the heap without any searching. If MiniPages of different sizes were created for big allocations logic used for normal MiniPage allocations would break. Big allocations are provisioned in intervals of ~2 kilobytes for the same reason.
 
