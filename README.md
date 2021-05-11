@@ -19,7 +19,7 @@ Rust Web Assembly allocator.
   - [MiniPages](#minipages)
   - [MetaPage](#metapage)
   - [Big Allocation](#big-allocation)
-  - [Life Cycle of an Allocation](#life-cycle-of-an-allocation](#life-cycle-of-an-allocation)
+  - [Life Cycle of an Allocation](#life-cycle-of-an-allocation)
 
 # Overview
 Alligator is a _real time_ Web Assembly memory allocator for Rust. Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
