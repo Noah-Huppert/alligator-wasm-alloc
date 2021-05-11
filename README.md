@@ -15,21 +15,11 @@ Rust Web Assembly allocator.
 - [Design](#design)
 
 # Overview
-Alligator is an effort to build a great Web Assembly
-memory allocator for Rust. It is in the beginning
-stages. The Alligator development's vision:
+Alligator is a _real time_ Web Assembly memory allocator for Rust. Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
 
-> The memory model of Web Assembly is different
-> from the `malloc` world programmers have been
-> working with for decades. Web Assembly's memory is a
-> contiguous byte array which can never shrink.
-> Alligator treats Web Assembly as a real time embedded
-> environment by trying to maintain a low memory
-> overhead and have a constant time complexity.
+See [Design](#design) for more details on performance and internal workings.  
 
-The groundwork is being laid out right now, there is
-much to do. See the releases section for detailed
-progress information. 
+[Contributors](./CONTRIBUTORS.md)
 
 # Usage
 Currently a crate has not been published as the project
@@ -250,6 +240,8 @@ make c-test-build
 Then run `./c-test`.
 
 # Design
+Alligator attempts to perform allocations and de-allocations memory in constant time, with the goal of being well suited for real time WASM applications.
+
 ## Memory Limit
 This allocator is designed to allocate no more than 2 GB of memory.
 
