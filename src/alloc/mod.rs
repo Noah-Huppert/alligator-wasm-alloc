@@ -57,9 +57,6 @@ const NUM_SIZE_CLASSES_USIZE: usize = NUM_SIZE_CLASSES as usize;
 /// The maximum number of free minipages each size class's free minipages stack will be able to hold.
 const FREE_MINIPAGES_STACK_SIZE: u16 = 100;
 
-/// The maximum number of free big allocation headers to store in the free big allocation headers stack.
-const FREE_BIG_ALLOC_STACK_SIZE: u16 = 100;
-
 cfg_if! {
     if #[cfg(feature = "metrics")] {
         /// Records metrics about the allocation process.
@@ -208,9 +205,6 @@ struct MetaPage {
     /// Free segment indexes from the head of free_minipages for each size class. Allows us to avoid searching the MiniPageHeader bitmap for the most recently used MiniPage.
     free_segments: [*mut UnsafeStack<u16>; NUM_SIZE_CLASSES_USIZE],
 
-    /// Free big allocation headers.
-    free_big_allocs: *mut UnsafeStack<*mut BigAllocHeader>,
-
     /// Allocator metrics
     #[cfg(feature = "metrics")]
     metrics: *mut AllocMetrics,
@@ -248,16 +242,6 @@ impl MetaPage {
             next_ptr = after_ptr;
         }
 
-        // Setup free big alloc headers stack
-        {
-            let (stack, after_ptr) = UnsafeStack::<*mut BigAllocHeader>::alloc(
-                next_ptr,
-                FREE_BIG_ALLOC_STACK_SIZE,
-            );
-            (*page_ptr).free_big_allocs = stack;
-            next_ptr = after_ptr;
-        }
-        
         cfg_if! {
             if #[cfg(feature = "metrics")] {
                 // Setup metrics if feature is enabled
@@ -710,7 +694,7 @@ impl MiniPageSegment {
 /// Big allocations (gt MAX_SIZE_CLASS) are allocated to the nearest aligned free heap. This header is placed before allocated memory segment. Holds metadata about the allocation.
 struct BigAllocHeader {
     /// Size class for this allocation. Recorded even if over the maximum size class so the first field of this struct is compatible with MiniPageHeader.size_class_exp.
-    size_clas_exp: u8,
+    size_class_exp: u8,
     
     /// Next BigAllocHeader. Guaranteed to be ordered by memory start address. None if there is nothing after.
     next: Option<*mut BigAllocHeader>,
@@ -989,19 +973,32 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         // Check if not bigger than the largest MiniPage size class. If the case, we must use big alloc.
         if size_class.exp > MAX_SIZE_CLASS {
             // Try and find a free big alloc segment, or allocate a new one
-            let big_ptr = match (*(*meta_page).free_big_allocs).pop() {
-                Some(big_ptr) => {
-                    // Found a free big alloc header
+            let mut search_ptr = self.big_alloc_head;
+
+            while let Some(big_head) = search_ptr {
+                // Check if free and fits
+                if (*big_head).free && (*big_head).size_class_exp >= size_class.exp {
+                    // Free and will fit
+                    // Now mark this as being used, as we will use it for this allocation
                     cfg_if! {
                         if #[cfg(feature = "metrics")] {
-                            (*(*meta_page).free_big_allocs).record_pop_metrics(meta_page);
+                            (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
                         }
                     }
                     
-                    (*big_ptr).free = false; // allocated
-                    
-                    big_ptr
-                },
+                    (*big_head).free = false; // false = allocated
+
+                    // Exit early so we use this pointer
+                    break;
+                }
+                
+                // Iterate
+                search_ptr = (*big_head).next;
+            }
+
+            // If no valid free big allocations are found
+            let big_ptr = match search_ptr {
+                Some(ptr) => ptr,
                 None => {
                     // No free big alloc headers, must allocate one
                     cfg_if! {
@@ -1011,6 +1008,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                     }
                     
                     let big_ptr = self.next_minipage_addr as *mut BigAllocHeader;
+                    (*big_ptr).size_class_exp = size_class.exp;
                     (*big_ptr).next = self.big_alloc_head;
                     (*big_ptr).free = false; // allocated
 
@@ -1030,9 +1028,12 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
             // Compute the allocated address
             let alloc_addr = big_ptr.offset(1) as *mut u8;
-            
+
+            // Big allocation complete!
             return alloc_addr;
         }
+
+        // If program reaches this line we are using MiniPage "small" allocation
 
         // Determine if we need to allocate from a fresh or reused MiniPage
         let need_alloc_fresh = match self.total_alloc_reused[size_class.exp_as_idx()] > 0 {
@@ -1246,12 +1247,10 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                         cfg_if! {
                             if #[cfg(feature = "metrics")] {
                                 (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
-                                (*(*meta_page).free_big_allocs).record_push_cost(meta_page);
                             }
                         }
                         
                         (*big_head).free = true; // true = unallocated
-                        (*(*meta_page).free_big_allocs).push(big_head);
 
                         // Exit early, as we have found the allocation's header and freed it
                         return;
