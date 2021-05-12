@@ -193,6 +193,9 @@ cfg_if! {
 
             /// A MiniPage taken off a free minipages stack ended up not having free segments. This is a breach of the free minipages stack "contract", where all MiniPages on this stack should have at least one free segment.
             FreeMiniPagesContractBreach,
+
+            /// A de-allocation call was made, where it was determined that the pointer was from a big allocation. The program then tried to find the corresponding BigAllocHeader for the provided pointer. However a corresponding header was not found. The de-allocation call is considered a user error.
+            BigDeallocHeaderNotFound,
         }
     }
 }
@@ -382,11 +385,11 @@ impl <T> UnsafeStack<T> where T: Copy {
 /// Header for a MiniPage.
 #[derive(Debug)]
 struct MiniPageHeader {
-    /// The next free node of the same size class.
-    next: Option<*mut MiniPageHeader>,
-
     /// Size class exponent
     size_class_exp: u8,
+    
+    /// The next free node of the same size class.
+    next: Option<*mut MiniPageHeader>,
 
     /// Bit-packed free list. A 1 means that segment is free, 0 means allocated.
     free_segments: [u8; MINI_PAGE_FREE_SEGMENTS_SIZE],
@@ -706,6 +709,9 @@ impl MiniPageSegment {
 
 /// Big allocations (gt MAX_SIZE_CLASS) are allocated to the nearest aligned free heap. This header is placed before allocated memory segment. Holds metadata about the allocation.
 struct BigAllocHeader {
+    /// Size class for this allocation. Recorded even if over the maximum size class so the first field of this struct is compatible with MiniPageHeader.size_class_exp.
+    size_clas_exp: u8,
+    
     /// Next BigAllocHeader. Guaranteed to be ordered by memory start address. None if there is nothing after.
     next: Option<*mut BigAllocHeader>,
     
@@ -1216,63 +1222,116 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             }
         }
 
-        // Determine segment
-        let segment = addr.get_segment(size_class);
+        // Determine if big alloc
+        if (*minipage_header).size_class_exp > MAX_SIZE_CLASS {
+            // Memory was allocated using the big allocation technique
+            let mut big_ptr = self.big_alloc_head;
 
-        // Ensure segment was previously allocated
-        if segment.get_free_bitmap(base_ptr) {
-            // Segment not allocated
+            while let Some(big_head) = big_ptr {
+                cfg_if! {
+                    if #[cfg(feature = "metrics")] {
+                        ((*meta_page).metrics).heap_bytes_read += size_of::<BigAllocHeader>();
+                    }
+                }
+                
+                // Check allocated
+                if !(*big_head).free {
+                    // Check in big allocation header's range
+                    let start_addr = AllocAddr::from_ptr(base_ptr, big_head.offset(1) as *mut u8);
+                    let end_addr = AllocAddr::new(u32::from(start_addr.addr) + (*big_head).size_bytes);
+
+                    if addr.addr >= start_addr.addr && addr.addr <= end_addr.addr {
+                        // In range, big_head is the header this allocation came from
+                        // Now free!
+                        cfg_if! {
+                            if #[cfg(feature = "metrics")] {
+                                (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
+                                (*(*meta_page).free_big_allocs).record_push_cost(meta_page);
+                            }
+                        }
+                        
+                        (*big_head).free = true; // true = unallocated
+                        (*(*meta_page).free_big_allocs).push(big_head);
+
+                        // Exit early, as we have found the allocation's header and freed it
+                        return;
+                    }
+                }
+                
+                // Iterate
+                big_ptr = (*big_head).next;
+            }
+
+            // If the while loop finishes without returning from the method then no big allocation header was found for this pointer. Which means the deallocation call is invalid.
+
             cfg_if! {
                 if #[cfg(feature = "metrics")] {
-                    // For reading from a MiniPageHeader free_segments byte on the heap
+                    self.failure = Some(AllocFail::BigDeallocHeaderNotFound);
+                }
+            }
+
+            return;
+        } else {
+            // Memory was allocated using MiniPages
+
+            // Determine segment
+            let segment = addr.get_segment(size_class);
+
+            // Ensure segment was previously allocated
+            if segment.get_free_bitmap(base_ptr) {
+                // Segment not allocated
+                cfg_if! {
+                    if #[cfg(feature = "metrics")] {
+                        // For reading from a MiniPageHeader free_segments byte on the heap
+                        (*(*meta_page).metrics).heap_bytes_read += size_of::<bool>();
+                    }
+                }
+                
+                return;
+            }
+
+            // Update segment bitmap
+            segment.write_free_bitmap(base_ptr, true);
+
+            cfg_if! {
+                if #[cfg(feature = "metrics")] {
+                    // For writing to a MiniPageHeader free_segments byte on the heap
+                    (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
+                }
+            }
+
+            // Push onto free segments stack if minipage is the current MiniPage
+            if (*(*meta_page).free_minipages[size_class.exp_as_idx()]).peek() == Some(minipage_header) {
+                (*(*meta_page).free_segments[size_class.exp_as_idx()]).push(segment.segment_idx_u16());
+
+                cfg_if! {
+                    if #[cfg(feature = "metrics")] {
+                        // For peeking the free_minipages UnsafeStack on the heap
+                        (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_peek_cost(meta_page);
+                        
+                        // For pushing a free segment onto the free_segments UnsafeStack on the heap
+                        (*(*meta_page).free_segments[size_class.exp_as_idx()]).record_push_cost(meta_page);
+                    }
+                }
+            } else if !(*minipage_header).on_free_minipages_stack {
+                // Not pushed on minipages stack
+                // First time we have deallocated from this MiniPage since it was full
+                
+                (*(*meta_page).free_minipages[size_class.exp_as_idx()]).push(minipage_header);
+                
+                cfg_if! {
+                    if #[cfg(feature = "metrics")] {
+                        // For pushing a MiniPageHeader pointer onto the free_minipages UnsafeStack on the heap
+                        (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_push_cost(meta_page);
+                    }
+                }
+            }
+
+            cfg_if! {
+                if #[cfg(feature = "metrics")] {
+                    // For reading the (*minipage_header).on_free_minipages_stack bool from the heap
                     (*(*meta_page).metrics).heap_bytes_read += size_of::<bool>();
                 }
-            }
-            
-            return;
-        }
-
-        // Update segment bitmap
-        segment.write_free_bitmap(base_ptr, true);
-
-        cfg_if! {
-            if #[cfg(feature = "metrics")] {
-                // For writing to a MiniPageHeader free_segments byte on the heap
-                (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
-            }
-        }
-
-        // Push onto free segments stack if minipage is the current MiniPage
-        if (*(*meta_page).free_minipages[size_class.exp_as_idx()]).peek() == Some(minipage_header) {
-            (*(*meta_page).free_segments[size_class.exp_as_idx()]).push(segment.segment_idx_u16());
-
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    // For peeking the free_minipages UnsafeStack on the heap
-                    (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_peek_cost(meta_page);
-                    
-                    // For pushing a free segment onto the free_segments UnsafeStack on the heap
-                    (*(*meta_page).free_segments[size_class.exp_as_idx()]).record_push_cost(meta_page);
-                }
-            }
-        } else if !(*minipage_header).on_free_minipages_stack {
-            // Not pushed on minipages stack
-            // First time we have deallocated from this MiniPage since it was full
-            
-            (*(*meta_page).free_minipages[size_class.exp_as_idx()]).push(minipage_header);
-            
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    // For pushing a MiniPageHeader pointer onto the free_minipages UnsafeStack on the heap
-                    (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_push_cost(meta_page);
-                }
-            }
-        }
-
-        cfg_if! {
-            if #[cfg(feature = "metrics")] {
-                // For reading the (*minipage_header).on_free_minipages_stack bool from the heap
-                (*(*meta_page).metrics).heap_bytes_read += size_of::<bool>();
             }
         }
     }
