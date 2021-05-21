@@ -1,5 +1,5 @@
 # Alligator
-A real memory allocator built for web assembly, written for Rust.
+A real memory allocator built for web assembly, written in Rust.
 
 # Table Of Contents
 - [Overview](#overview)
@@ -22,7 +22,7 @@ A real memory allocator built for web assembly, written for Rust.
   - [Life Cycle of an Allocation](#life-cycle-of-an-allocation)
 
 # Overview
-Alligator is a _real time_ memory allocator built for WebAssembly, written for Rust.  Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
+Alligator is a _real time_ memory allocator built for WebAssembly, written in Rust.  Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
 
 **Why do I need a different allocator?**  
 The default Rust allocator is the wrong tool for the job when it comes to WebAssembly.
