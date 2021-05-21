@@ -76,7 +76,7 @@ The Makefile provides the following objects:
     - `build` - Build the dynamic C library and headers, AFL and Hangover fuzzer
 	- `fuzz` - `build` then run AFL and Hangover fuzzers on dynamic C library
   - Only builds for the `host` 32-bit LibC platform, set via `TARGET_LIBC32`, defaults to `i686-unknown-linux-gnu`
-  - Ex: `liballigatorc-fuzz`
+  - Ex: `make liballigatorc-fuzz`
 - `bench` - Example programs which use Alligator
   - The exact benchmark program must be specified using the `BENCH` variable (defaults to `use-global`), see [Running Benchmarks](#running-benchmarks) for details.
   - Actions:
@@ -86,7 +86,7 @@ The Makefile provides the following objects:
   - Targets:
     - `host` - 32-bit LibC platform, set via `TARGET_LIBC32`, defaults to `i686-unknown-linux-gnu`
 	- `wasm` - WASI32 WASM
-  - Ex: `bench-run-host` or `bench-debug-wasm`
+  - Ex: `make bench-run-host` or `bench-debug-wasm`
 - `c-test` - Very basic C test program for `liballigatorc`
   - `c-test-build` - Build `c-test` Binary from `c-test.c`
   
