@@ -1,5 +1,5 @@
 # Alligator
-Rust Web Assembly allocator.
+A real memory allocator built for web assembly, written for Rust.
 
 # Table Of Contents
 - [Overview](#overview)
@@ -22,7 +22,7 @@ Rust Web Assembly allocator.
   - [Life Cycle of an Allocation](#life-cycle-of-an-allocation)
 
 # Overview
-Alligator is a _real time_ Web Assembly memory allocator for Rust. Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
+Alligator is a _real time_ memory allocator built for Web Assembly, written for Rust.  Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
 
 See [Design](#design) for more details on performance and internal workings.  
 
@@ -107,7 +107,7 @@ A few programs are provided which utilizes Alligator:
 
 - `use-global` (Default): Performs a few heap allocations using Alligator as the programs Global Allocator
 - `alloc-all`: Performs more than one MiniPage's worth of allocations for each size class
-- `random-report`: Performs random allocations and outputs results as CSV rows.
+- `random-report`: Performs random allocations and outputs results as CSV rows (Requires you provide `CARGO_BARGS+=--features=metrics` to Make)
 
 Specify which benchmark to run via the `BENCH` environment variable in Make (ex., in the command line specify `BENCH=<benchmark name>` like so `make bench-run-wasm BENCH=alloc-all`).
 

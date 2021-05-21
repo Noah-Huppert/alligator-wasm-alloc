@@ -63,11 +63,11 @@ cfg_if! {
         /// heap_bytes_{read,write} record memory operations. It does not record accesses to AllocatorImpl but does record any memory operations in MetaPage, UnsafeStack, and MiniPageHeader. 
         #[derive(Copy, Clone, Debug)]
         pub struct AllocMetrics {
-            /// Total number of allocations for each size class.
-            pub total_allocs: [u32; NUM_SIZE_CLASSES_USIZE],
+            /// Total number of allocations for each size class. Indexes 0 to the second to last item correspond to the minimum to maximum size classes. The last index records the number of big allocations.
+            pub total_allocs: [u32; NUM_SIZE_CLASSES_USIZE+1],
 
-            /// Total number of deallocations for each size class.
-            pub total_deallocs: [u32; NUM_SIZE_CLASSES_USIZE],
+            /// Total number of deallocations for each size class. Indexes 0 to the second to last item correspond to the minimum and maximum size classes. The last index records the number of big de-allocations.
+            pub total_deallocs: [u32; NUM_SIZE_CLASSES_USIZE+1],
 
             /// Total number of MiniPages used.
             pub total_minipages: u32,
@@ -84,8 +84,8 @@ cfg_if! {
             unsafe fn alloc(start_addr: *mut u8) -> (*mut AllocMetrics, *mut u8) {
                 // Allocate
                 let metrics_ptr = start_addr as *mut AllocMetrics;
-                (*metrics_ptr).total_allocs = [0; NUM_SIZE_CLASSES_USIZE];
-                (*metrics_ptr).total_deallocs = [0; NUM_SIZE_CLASSES_USIZE];
+                (*metrics_ptr).total_allocs = [0; NUM_SIZE_CLASSES_USIZE+1];
+                (*metrics_ptr).total_deallocs = [0; NUM_SIZE_CLASSES_USIZE+1];
                 (*metrics_ptr).total_minipages = 0;
                 (*metrics_ptr).heap_bytes_read = 0;
                 (*metrics_ptr).heap_bytes_write = 0;
@@ -963,15 +963,15 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             return null_mut();
         }
 
-        // Record metrics
-        cfg_if! {
-            if #[cfg(feature = "metrics")] {
-                (*(*meta_page).metrics).total_allocs[size_class.exp_as_idx()] += 1;
-            }
-        }
-
         // Check if not bigger than the largest MiniPage size class. If the case, we must use big alloc.
         if size_class.exp > MAX_SIZE_CLASS {
+            // Record metrics
+            cfg_if! {
+                if #[cfg(feature = "metrics")] {
+                    (*(*meta_page).metrics).total_allocs[NUM_SIZE_CLASSES_USIZE] += 1;
+                }
+            }
+            
             // Try and find a free big alloc segment, or allocate a new one
             let mut search_ptr = self.big_alloc_head;
 
@@ -1034,6 +1034,12 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // If program reaches this line we are using MiniPage "small" allocation
+        // Record metrics
+        cfg_if! {
+            if #[cfg(feature = "metrics")] {
+                (*(*meta_page).metrics).total_allocs[size_class.exp_as_idx()] += 1;
+            }
+        }
 
         // Determine if we need to allocate from a fresh or reused MiniPage
         let need_alloc_fresh = match self.total_alloc_reused[size_class.exp_as_idx()] > 0 {
@@ -1216,22 +1222,23 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
         let size_class = SizeClass::new((*minipage_header).size_class_exp);
 
-        // Record metrics
-        cfg_if! {
-            if #[cfg(feature = "metrics")] {
-                (*(*meta_page).metrics).total_deallocs[size_class.exp_as_idx()] += 1;
-            }
-        }
-
         // Determine if big alloc
         if (*minipage_header).size_class_exp > MAX_SIZE_CLASS {
             // Memory was allocated using the big allocation technique
+            // Record metrics
+            cfg_if! {
+                if #[cfg(feature = "metrics")] {
+                    (*(*meta_page).metrics).total_deallocs[NUM_SIZE_CLASSES_USIZE] += 1;
+                }
+            }
+
+            // Search for a big allocation header corresponding to ptr
             let mut big_ptr = self.big_alloc_head;
 
             while let Some(big_head) = big_ptr {
                 cfg_if! {
                     if #[cfg(feature = "metrics")] {
-                        ((*meta_page).metrics).heap_bytes_read += size_of::<BigAllocHeader>();
+                        (*(*meta_page).metrics).heap_bytes_read += size_of::<BigAllocHeader>();
                     }
                 }
                 
@@ -1272,6 +1279,13 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             return;
         } else {
             // Memory was allocated using MiniPages
+
+            // Record metrics
+            cfg_if! {
+                if #[cfg(feature = "metrics")] {
+                    (*(*meta_page).metrics).total_deallocs[size_class.exp_as_idx()] += 1;
+                }
+            }
 
             // Determine segment
             let segment = addr.get_segment(size_class);
