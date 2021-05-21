@@ -295,7 +295,7 @@ Each MiniPage stores a small header within the heap right before the 2kB memory 
 - Size class (1B)
 - Bit-packed Segment free list (256B)
 
-In order to find free MiniPages and segments in constant time a set of stacks is used for each size class. Popping from one of these stacks returns the next free MiniPage pointer or segment index. There is a stack for MiniPages and segments for each size class, which can hold `2^n` items (`n` = size class).
+In order to find free MiniPages and segments in constant time a set of stacks is used for each size class. Popping from one of these stacks returns the next free MiniPage pointer or segment index. When MiniPages or segments are freed the allocator pushes onto these stacks. There is a stack for MiniPages and segments for each size class, which can hold `2^n` items (`n` = size class).
 
 ## MetaPage
 The first bit of the heap is used to store metadata about the allocator state. This area is called the MetaPage. It will be lazily allocated.
