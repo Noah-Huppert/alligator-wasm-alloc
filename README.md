@@ -27,11 +27,11 @@ Alligator is a _real-time_ memory allocator built for WebAssembly, written in Ru
 **Why do I need a different allocator?**  
 The default Rust allocator is the wrong tool for the job when it comes to WebAssembly.
 
-WebAssembly's memory model and heap is different native platforms. The maximum memory size is 4 GB([†](https://webassembly.github.io/spec/js-api/index.html#limits)) and there is no concept of freeing memory to the host.
+WebAssembly's memory model is very different from native platforms. The WebAssembly heap is a contiguous segment of memory which can only grow, with a maximum size of 4 GB([†](https://webassembly.github.io/spec/js-api/index.html#limits)).
 
-In contrast native applications can allocate huge regions of memory, much larger than 4 GB. Plus there is a concept of freeing memory back to the host. As such memory allocators designed for this world, like the default Rust allocator, must make design trade-offs in order to accommodate these requirements.
+The default Rust allocator was written for native platforms where the memory model's requirements are very different from WebAssembly's. Native allocators must deal with being able to allocate a seemingly infinite amount of memory, which is not contiguous, and which can be freed back to the operating system.
 
-The Alligator WASM Allocator was designed from the start with WebAssembly as its primary target. Optimizations can be made because we know that we'll never have to give space back to the OS, and never handle allocating more than 4 GB. 
+As a result the Rust allocator must make design trade-offs in order to accommodate these broad requirements. The Alligator WASM Allocator was designed from the start for WebAssembly's memory model. It does not need to contend with traditional native memory's requirements, allowing for optimizations.
 
 See [Design](#design) for more details on performance and internal workings.  
 
