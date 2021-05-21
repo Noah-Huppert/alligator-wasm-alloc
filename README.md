@@ -22,7 +22,16 @@ A real memory allocator built for web assembly, written for Rust.
   - [Life Cycle of an Allocation](#life-cycle-of-an-allocation)
 
 # Overview
-Alligator is a _real time_ memory allocator built for Web Assembly, written for Rust.  Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
+Alligator is a _real time_ memory allocator built for WebAssembly, written for Rust.  Using Alligator is as simple as adding two lines of code to your project, see the [Usage](#usage) instructions for more.
+
+**Why do I need a different allocator?**  
+The default Rust allocator is the wrong tool for the job when it comes to WebAssembly.
+
+WebAssembly's memory model and heap is different native platforms. The maximum memory size is 4 GB([†](https://webassembly.github.io/spec/js-api/index.html#limits)) and there is no concept of freeing memory to the host.
+
+In contrast native applications can allocate huge regions of memory, much larger than 4 GB. Plus there is a concept of freeing memory back to the host. As such memory allocators designed for this world, like the default Rust allocator, must make design trade-offs in order to accommodate these requirements.
+
+The Alligator WASM Allocator was designed from the start with WebAssembly as its primary target. Optimizations can be made because we know that we'll never have to give space back to the OS, and never handle allocating more than 4 GB. 
 
 See [Design](#design) for more details on performance and internal workings.  
 
@@ -86,7 +95,7 @@ Cargo is used to build the C dynamic library in `liballigatorc` and the binaries
 To provide arguments to Cargo when it is building or running, modify the `CARGO_BARGS` (build arguments) and `RARGS` (run arguments) environment variables. Use `+=` when setting them to preserve behavior.
   
 ## Compile Targets
-Alligator is meant as a heap allocator for Web Assembly
+Alligator is meant as a heap allocator for WebAssembly
 only. However other targets can run Alligator for debugging purposes.
 
 If type `heap::HeapType` is not found in `src/alloc/heap.rs` then the current build platform is not supported.
@@ -111,7 +120,7 @@ A few programs are provided which utilizes Alligator:
 
 Specify which benchmark to run via the `BENCH` environment variable in Make (ex., in the command line specify `BENCH=<benchmark name>` like so `make bench-run-wasm BENCH=alloc-all`).
 
-This program can be built as a Web Assembly program or as a host binary. The host binary is only used for debugging purposes, see [Debugging](#debugging).
+This program can be built as a WebAssembly program or as a host binary. The host binary is only used for debugging purposes, see [Debugging](#debugging).
 
 To run a benchmark program with Wasmtime:
 
@@ -125,7 +134,7 @@ This will automatically build a benchmark if it is not up to date, to build it m
 make bench-build-wasm BENCH=use-global
 ```
 
-The resulting Web Assembly is output as
+The resulting WebAssembly is output as
 an `alligator.wasm` file.
 
 ## Compile Time Features
@@ -142,7 +151,7 @@ make your-make-target CARGO_BARGS+=--features=metrics
 ```
 
 ## Debugging
-Due to the lack of debugging support for Web Assembly
+Due to the lack of debugging support for WebAssembly
 debugging is easier to do in a native binary format 
 like that of 32-bit libc systems (See [Debugging Targets](#debugging-targets)).
 
@@ -178,7 +187,7 @@ And if you need to run the host binary:
 make bench-run-host BENCH=use-global
 ```
 
-If debugging in Web Assembly is absolutely required
+If debugging in WebAssembly is absolutely required
 lldb can be used with wasmtime:
 
 ```
