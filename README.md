@@ -12,6 +12,7 @@ A real-time memory allocator built for web assembly, written in Rust.
   - [Compile Time Features](#compile-time-features)
   - [Debugging](#debugging)
   - [Fuzzing](#fuzzing)
+  - [Website](#website)
 - [Design](#design)
   - [Time Complexity](#time-complexity)
   - [Memory Limit](#memory-limit)
@@ -254,6 +255,29 @@ make c-test-build
 ```
 
 Then run `./c-test`.
+
+## Website
+The website is a Typescript + React app, Yarn is used for packaging, and Parcel is used for bundling.
+
+Change into the `website` directory then complete the following instructions.
+
+Install dependencies:
+
+```
+yarn install
+```
+
+Start a development server:
+
+```
+yarn dev
+```
+
+Build the frontend into a set of static files, output in the `dist` directory.
+
+```
+yarn build
+```
 
 # Design
 Alligator attempts to perform allocations and de-allocations of memory in constant time, with the goal of being well suited for real time WASM applications.

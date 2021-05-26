@@ -1,0 +1,9 @@
+# Build output
+dist/
+.cache/
+
+# Node dependencies
+node_modules/
+
+# Runtime logs
+*.log
