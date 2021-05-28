@@ -6,6 +6,9 @@ pub const PAGE_BYTES: u32 = 65536;
 /// PAGE_BYTES as isize
 pub const PAGE_BYTES_ISIZE: isize = PAGE_BYTES as isize;
 
+/// The maximum number of pages which can be allocated. Defined by the WebAssembly spec: https://webassembly.github.io/spec/js-api/index.html#limits
+pub const MAX_PAGES: u32 = 65536;
+
 /// Host heap implementation. How the memory actually gets allocated by the operating system / runtime. Acts as one contiguous memory segment.
 /// Emulates the WASM memory model.
 pub trait HostHeap {
@@ -85,10 +88,6 @@ cfg_if! {
     } else if #[cfg(all(unix, target_pointer_width = "32"))] {
         use libc::malloc;
 
-        /// The number of pages allocated to mock
-        /// out the WASM heap. Currently 2 GB.
-        const MALLOC_PAGES: usize = 31250;
-        
         /// Implements a heap using libc malloc.
         pub struct LibCHostHeap {
             /// The host memory region pointer. None if
@@ -107,7 +106,7 @@ cfg_if! {
                 if let Some(ptr) = self.host_base_ptr {
                     return ptr;
                 } else {
-                    let ptr = malloc(MALLOC_PAGES * (PAGE_BYTES as usize)) as *mut u8;
+                    let ptr = malloc(MAX_PAGES * (PAGE_BYTES as usize)) as *mut u8;
                     self.host_base_ptr = Some(ptr);
                     return ptr;
                 }
@@ -127,7 +126,7 @@ cfg_if! {
 
                 // Ensure not oversize
                 let new_guest_end_page = self.guest_end_page + delta_pages;
-                if new_guest_end_page > MALLOC_PAGES {
+                if new_guest_end_page > MAX_PAGES {
                     // Is over what we can allocate
                     return usize::MAX;
                 }
