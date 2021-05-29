@@ -15,7 +15,7 @@ const MAX_HOST_PAGES: usize = 200;
 const MAX_HOST_PAGES_ISIZE: isize = MAX_HOST_PAGES as isize;
 
 /// Number of bytes which can be allocated from one MiniPage.
-const MINI_PAGE_ALLOC_BYTES: u16 = 2048;
+const MINI_PAGE_ALLOC_BYTES: u32 = 2048;
 
 const FRESH_REUSED_RATIO: f64 = 1_f64;
 
@@ -38,8 +38,11 @@ const NUM_SIZE_CLASSES: u8 = (MAX_SIZE_CLASS - MIN_SIZE_CLASS) + 1;
 /// The total number of size classes allocated as usize.
 const NUM_SIZE_CLASSES_USIZE: usize = NUM_SIZE_CLASSES as usize;
 
-/// The maximum number of free minipages each size class's free minipages stack will be able to hold.
-const FREE_MINIPAGES_STACK_SIZE: u16 = 100;
+/// The number of MiniPages which can be allocated in one WASM page.
+const MINI_PAGES_PER_WASM_PAGE: u32 = heap::PAGE_BYTES / MINI_PAGE_ALLOC_BYTES;
+
+/// The maximum number of MiniPages which can be allocated, every. Dictated by the maximum WASM heap size.
+const MAX_MINI_PAGES: u32 = MINI_PAGES_PER_WASM_PAGE * heap::MAX_PAGES;
 
 cfg_if! {
     if #[cfg(feature = "metrics")] {
@@ -114,9 +117,6 @@ cfg_if! {
 struct AllocatorImpl<H> where H: HostHeap {
     /// True if the initial call to allocate all the
     /// memory we will use has been made.
-    /// next_minipage_addr is only
-    /// guaranteed to not be null when did_init_heap
-    /// is true.
     did_init_heap: bool,
     
     /// The HostHeap implementation for the
@@ -132,11 +132,11 @@ struct AllocatorImpl<H> where H: HostHeap {
     /// The first MiniPage worth of space in the heap is reserved for this "meta page". It is used to store information which needs to be placed on the heap for the Allicator implementation. Some if allocated and None if not allocated yet.
     meta_page: Option<*mut MetaPage>,
 
-    /// The address of the first byte of memory which can be used to satisfy user allocation requests. Takes into account the space for the meta-page. Only non-null after ensure_meta_page() is called.
-    alloc_start_ptr: *mut u8,
+    /// The address of the first byte of memory which can be used to satisfy user allocation requests. Takes into account the space for the meta-page. Only Some after ensure_meta_page() is called.
+    alloc_start_ptr: Option<*mut u8>,
 
-    /// Next address which can be used for a new MiniPage.
-    next_minipage_addr: AllocAddr,
+    /// Pointer to the next free byte on the heap which can be used for allocation. Used internally to make sure the different data structures don't overlap. Not related to the next address a client might get if they ask for an allocation.
+    next_alloc_ptr: Option<*mut u8>,
 
     /// Total number of allocations for each size class which were performed from a reused MiniPage header.
     total_alloc_reused: [u32; NUM_SIZE_CLASSES_USIZE],
@@ -166,9 +166,6 @@ cfg_if! {
             /// The size class determination logic wanted to allocate a size class which was too small.
             SizeClassTooSmall,
 
-            /// Big allocations are not supported yet, and the allocation requested a size that requires big allocations.
-            BigAllocTODO,
-
             /// Failed to add a new MiniPage because there is no room left of the heap.
             AddMiniPageNoSpace,
 
@@ -189,14 +186,14 @@ struct BigAllocFlag {
 
 /// The first MiniPage of the heap will hold some metadata which we don't want / can't put in the AllocatorImpl stack object.
 struct MetaPage {
-    /// Headers for all MiniPages. Pointer to start of array.
-    minipage_headers_ptr: *mut MiniPageHeader,
+    /// Headers for all MiniPages.
+    /// TODO: Make Option<*mut MiniPageHeader>
+    minipage_headers: [*mut MiniPageHeader, MAX_MINI_PAGES],
 
-    /// Array of flags which indicate if a MiniPage index actually belongs to a big allocation. Pointer to start of array.
-    big_alloc_flags: *mut BigAllocFlag,
+    /// Array of flags which indicate if a MiniPage index actually belongs to a big allocation.
+    big_alloc_flags: [Option<*mut BigAllocFlag>, MAX_MINI_PAGES],
     
     /// Indexes of free MiniPages for each size class. The head of each list is the currently used MiniPage for that size class. The free_segments stack will track free indexes for this MiniPage. MiniPages are popped off these stacks when their free_segments stack is empty (aka when there are no free segments on the MiniPage).
-    /// TODO: I made this into u16 instead of *mut MiniPageHeader
     free_minipages: [*mut UnsafeStack<u16>; NUM_SIZE_CLASSES_USIZE],
 
     /// Free segment indexes from the head of free_minipages for each size class. Allows us to avoid searching the MiniPageHeader bitmap for the most recently used MiniPage.
@@ -212,19 +209,19 @@ impl MetaPage {
     unsafe fn alloc(alloc_ptr: *mut u8) -> (*mut MetaPage, *mut u8) {
         let page_ptr = alloc_ptr as *mut MetaPage;
 
+	   // Zero out all values
+	   (*page_ptr).minipage_headers = [null_mut(); MAX_MINI_PAGES];
+	   (*page_ptr).big_alloc_flags = [None; MAX_MINI_PAGES];
+	   (*page_ptr).free_minipages = [null_mut(); NUM_SIZE_CLASSES as usize];
+	   (*page_ptr).free_segments = [null_mut(); NUM_SIZE_CLASSES as usize];
+	   cfg_if! {
+		  if #[cfg(features = "metrics")] {
+			 (*page_ptr).metrics = null_mut();
+		  }
+	   }
+
         // Space after this MetaPage struct in which we can place other allocations
         let mut next_ptr = page_ptr.offset(1) as *mut u8;
-
-	   // Setup MiniPageHeader array
-	   let mini_per_wasm = heap::PAGE_BYTES / MINI_PAGE_ALLOC_BYTES;
-	   let max_mini = mini_per_wasm * heap::MAX_PAGES;
-
-	   self.minipage_headers_ptr = next_ptr;
-	   next_ptr = next_ptr.offset(max_mini * MINI_PAGE_ALLOC_BYTES);
-
-	   // Setup big allocation flags
-	   self.big_alloc_flags = next_ptr;
-	   next_ptr = next_ptr.offset(max_mini * MINI_PAGE_ALLOC_BYTES);
 
         // Setup free minipages stacks
         for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
@@ -232,7 +229,7 @@ impl MetaPage {
             
             let (stack, after_ptr) = UnsafeStack::<u16>::alloc(
                 next_ptr,
-                FREE_MINIPAGES_STACK_SIZE,
+                MINI_PAGE_ALLOC_BYTES / 2_u32.pow(u32::from(size_class.exp)),
             );
             (*page_ptr).free_minipages[size_class.exp_as_idx()] = stack;
             next_ptr = after_ptr;
@@ -261,16 +258,6 @@ impl MetaPage {
         }
 
         return (page_ptr, next_ptr);
-    }
-
-    /// Returns the MiniPageHeader for a specified MiniPage.
-    unsafe fn get_minipage_header(&mut self, page_meta: MiniPageMeta) -> *mut MiniPageHeader {
-	   self.minipage_headers_ptr.offset(page_meta.page_idx as isize)
-    }
-
-    /// Returns the BigAllocFlag for a specified MiniPage.
-    unsafe fn get_big_alloc_flag(&mut self, page_meta: MiniPageMeta) -> *mut BigAllocFlag {
-	   self.big_alloc_flags.offset(page_meta.page_idx as isize)
     }
 }
 
@@ -726,9 +713,9 @@ impl BigAllocHeader {
         // - Program only works with 32 bit addresses => usize is 32 bits
         // - f64 from 32 bit address should not panic
         // - division and ceiling equation only operates on 32 bit input values => output value should be 32 bits
-        let interval_mult = (f64::try_from(min_bytes).unwrap() / MINI_PAGE_ALLOC_BYTES_F64).ceil() as u32;
+        let interval_mult = (f64::try_from(min_bytes).unwrap() / (MINI_PAGE_ALLOC_BYTES as f64)).ceil() as u32;
 
-        let required_bytes = interval_mult * MINI_PAGE_ALLOC_BYTES_U32;
+        let required_bytes = interval_mult * (MINI_PAGE_ALLOC_BYTES as u32);
         
         let size_bytes = required_bytes - BIG_ALLOC_HEADER_SIZE_U32;
 
@@ -745,9 +732,9 @@ impl AllocatorImpl<HeapType> {
         minipage_lists: [null_mut(); NUM_SIZE_CLASSES_USIZE],
         big_alloc_head: None,
         meta_page: None,
-        alloc_start_ptr: null_mut(),
-            
-        next_minipage_addr: AllocAddr::new(0), // TODO: Refactor to Option<AllocAddr>
+	   
+        alloc_start_ptr: None,            
+        next_alloc_ptr: None,
 
         total_alloc_reused: [0; NUM_SIZE_CLASSES_USIZE],
         total_alloc_fresh: [0; NUM_SIZE_CLASSES_USIZE],
@@ -759,18 +746,19 @@ impl AllocatorImpl<HeapType> {
 }
 
 impl<H> AllocatorImpl<H> where H: HostHeap {
-    /// Ensures that the MetaPage has been allocated and allocates the MetaPage if it has not been. Returns the existing, or newly allocated, MetaPage.
-    unsafe fn ensure_meta_page(&mut self) -> *mut MetaPage {
+    /// Ensures that the MetaPage has been allocated and allocates the MetaPage if it has not been. Returns a tuple with the existing, or newly allocated, MetaPage plus the alloc_start_ptr and next_alloc_ptr.
+    unsafe fn ensure_meta_page(&mut self) -> (*mut MetaPage, *mut u8, *mut u8) {
 	   let base_ptr = (*self.heap.get()).base_ptr();
 	   
         match self.meta_page {
-            Some(p) => p,
+            Some(p) => (p, self.alloc_start_ptr.unwrap(), self.next_alloc_ptr.unwrap()),
             None => {
                 // Initialize meta page
-                let (p, next_ptr) = MetaPage::alloc(self.next_minipage_addr.as_ptr(base_ptr));
+                let (p, next_ptr) = MetaPage::alloc(base_ptr);
                 self.meta_page = Some(p);
 
-                self.alloc_start_ptr = next_ptr;
+                self.alloc_start_ptr = Some(next_ptr);
+			 self.next_alloc_ptr = Some(next_ptr);
 
                 cfg_if! {
                     if #[cfg(feature = "metrics")] {
@@ -781,11 +769,8 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                         (*(*p).metrics).heap_bytes_write += end_addr.addr_usize() - start_addr.addr_usize();
                     }
                 }
-
-                // Set next MiniPage addr to after the allocated meta page
-                self.next_minipage_addr = AllocAddr::from_ptr(base_ptr, next_ptr);
                 
-                p
+                (p, next_ptr, next_ptr)
             },
         }
     }
@@ -795,7 +780,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
     /// Returns None if there were no free segments on the MiniPage.
     unsafe fn free_segments_update(&mut self, minipage: *mut MiniPageHeader) -> Option<u16> {
         let size_class = SizeClass::new((*minipage).size_class_exp);
-        let meta_page = self.ensure_meta_page();
+        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
 
         let mut search_byte_i = 0;
         let mut first_free_found: Option<u16> = None;
@@ -840,12 +825,14 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         first_free_found
     }
 
-    /// Setup a new MiniPageHead. Updates the next_minipage_addr, the minipage_lists head, MetaPage.free_minipages, and fresh_minipages for the size class. Always adds the new MiniPageHead to the head of minipage_lists.
-    /// Returns Option with the created MiniPage header if there was free space in the heap.
+    /// Setup a new MiniPageHead. Updates the next_alloc_ptr, the minipage_lists head, MetaPage.free_minipages, and fresh_minipages for the size class. Always adds the new MiniPageHead to the head of minipage_lists.
+    /// Returns Option with the created MiniPage header if there was free space in the heap. Along with the index of the page.
     /// Returns None if there is no space in the heap. This is fatal.
-    unsafe fn add_minipage(&mut self, size_class_exp: u8) -> Option<*mut MiniPageHeader> {
+    unsafe fn add_minipage(&mut self, size_class_exp: u8) -> Option<(*mut MiniPageHeader, usize)> {
         let size_class = SizeClass::new(size_class_exp);
-        let meta_page = self.ensure_meta_page();
+
+	   let base_ptr = (*self.heap.get()).base_ptr();
+        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
 
         cfg_if! {
             if #[cfg(feature = "metrics")] {
@@ -855,7 +842,8 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         
         // Check there is room on the heap
         let max_allowed_addr = AllocAddr::new((MAX_HOST_PAGES as u32) * heap::PAGE_BYTES);
-        if self.next_minipage_addr.addr >= max_allowed_addr.addr {
+	   let after_alloc_addr = AllocAddr::from_ptr(base_ptr, next_alloc_ptr.offset(MINI_PAGE_ALLOC_BYTES as isize));
+        if after_alloc_addr.addr >= max_allowed_addr.addr {
             // Out of space on the host heap
             return None;
         }
@@ -867,8 +855,9 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
           
         // Create new node
-	   let page_meta = MiniPageMeta::from_addr(self.next_minipage_addr);
-        let node_ptr = (*meta_page).get_minipage_header(page_meta);
+	   let page_addr = AllocAddr::from_ptr(base_ptr, next_alloc_ptr);
+	   let page_meta = MiniPageMeta::from_addr(page_addr);
+        let node_ptr = (*meta_page).minipage_headers[page_meta.page_idx];
         (*node_ptr).next = next;
         (*node_ptr).size_class_exp = size_class_exp;
         (*node_ptr).free_segments = [255; MINI_PAGE_FREE_SEGMENTS_SIZE]; // All 1 = all unallocated
@@ -898,9 +887,9 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         self.fresh_minipages[size_class.exp_as_idx()] = node_ptr;
 
         // Increment the next MiniPageHeader address
-        self.next_minipage_addr.addr += u32::from(MINI_PAGE_ALLOC_BYTES);
+	   self.next_alloc_ptr = Some(next_alloc_ptr.offset(MINI_PAGE_ALLOC_BYTES));
 
-        Some(node_ptr)
+        Some((node_ptr, page_meta.page_idx))
     }
 
     /// Allocate memory.
@@ -945,10 +934,8 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
        
         // Check Meta Page is initialized.
-        let meta_page = self.ensure_meta_page();
-
-        // Determine start of allocatable memory
-        let base_ptr = self.alloc_start_ptr;
+	   let base_ptr = (*self.heap.get()).base_ptr();
+        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
 
         // Determine size class of allocation
         let size_class = SizeClass::new_from_bytes(layout.size() as u16);
@@ -1009,17 +996,27 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                         }
                     }
 
-                    let big_ptr = self.next_minipage_addr.as_ptr(base_ptr) as *mut BigAllocHeader;
+				let page_meta = MiniPageMeta::from_addr(AllocAddr::from_ptr(alloc_start_ptr, next_alloc_ptr));
+
+				// Setup big alloc header
+                    let big_ptr = next_alloc_ptr as *mut BigAllocHeader;
                     (*big_ptr).size_class_exp = size_class.exp;
                     (*big_ptr).next = self.big_alloc_head;
                     (*big_ptr).free = false; // allocated
 
                     let (size_bytes, interval) = BigAllocHeader::compute_size(layout.size());
                     (*big_ptr).size_bytes = size_bytes;
+
+				// Set big allocation flags
+				for page_i in page_meta.page_idx..=(page_meta.page_idx + interval) {
+				    (*meta_page).big_alloc_flags[page_i] = Some(BigAllocFlag{
+					   start_idx: page_meta.page_idx,
+				    });
+				}
                     
                     self.big_alloc_head = Some(big_ptr);
-				
-                    self.next_minipage_addr.addr += interval * MINI_PAGE_TOTAL_BYTES;
+
+				self.next_alloc_ptr = Some(next_alloc_ptr.offset((interval * MINI_PAGE_TOTAL_BYTES) as isize));
 
                     big_ptr
                 },
@@ -1049,15 +1046,15 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             false => false,
         };
 
-        let node_ptr = match need_alloc_fresh {
+        let (node_ptr, page_idx) = match need_alloc_fresh {
             true => {
                 // Need to allocate from a fresh minipage                
                 match self.add_minipage(size_class.exp) {
-                    Some(ptr) => {
+                    Some((ptr, page_idx)) => {
                         // Put free indexes of segments on the segments stack for this new MiniPage
                         self.free_segments_update(ptr);
                         
-                        ptr
+                        (ptr, page_idx)
                     },
                     None => {
                         // No space on host heap
@@ -1083,16 +1080,15 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                                 (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_peek_cost(meta_page);
                             }
                         }
-
-				    let page_meta = MiniPageMeta::new(page_idx);
-				    ptr = (*meta_page).get_minipage_header(page_meta);
+				    
+				    ptr = (*meta_page).minipage_headers[page_idx];
 
                         // If free segments stack size is 0 => the MiniPage we just peeked was just added and we haven't grabbed the free indexes from the stack yet
                         if (*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0 {
                             self.free_segments_update(ptr);
                         } 
                         
-                        ptr
+                        (ptr, usize::from(page_idx))
                     },
                     None => {
                         // If no MiniPage with free segments for the size class was found
@@ -1100,13 +1096,13 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                         // This means we have to initialize the first MiniPage for this size class
                         // Or that there are no free MiniPages
                         match self.add_minipage(size_class.exp) {
-                            Some(ptr) => {
+                            Some((ptr, page_idx)) => {
+						  assert!((*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0, "There should be no free segment indexes left here because we didn't find a free MiniPage");
+						  
                                 // Put free indexes of segments on the segments stack for this new MiniPage
-                                assert!((*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0, "There should be no free segment indexes left here because we didn't find a free MiniPage");
-
                                 self.free_segments_update(ptr);
                                 
-                                ptr
+                                (ptr, page_idx)
                             },
                             None => {
                                 // No space on host heap
@@ -1188,12 +1184,12 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // Determine address we will allocate
-        let page_addr = AllocAddr::from_ptr(base_ptr, node_ptr as *mut u8);
-        let page_meta = MiniPageMeta::from_addr(page_addr);
+	   // DOING Figure out the page_idx from node_ptr or something above
+	   let page_meta = MiniPageMeta::new(page_idx);
         let segment = page_meta.get_segment(size_class, usize::from(next_free_segment_idx));
 
         // Mark segment as not free
-        segment.write_free_bitmap(base_ptr, false);
+        (*node_ptr).write_free_bitmap(segment, false);
 
         cfg_if! {
             if #[cfg(feature = "metrics")] {
@@ -1203,149 +1199,156 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // assert!(false,  "alloc made node_ptr={:?}", *node_ptr);
+	   // DOING Set MetaPage.big_alloc_flags
 
         // Return address
-        segment.as_addr().as_ptr(base_ptr)
+        segment.as_addr().as_ptr(alloc_start_ptr)
     }
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, _layout: Layout) {
         // Get some information about the heap
-        let meta_page = self.ensure_meta_page();
-        let base_ptr = self.alloc_start_ptr;
+	   let base_ptr = (*self.heap.get()).base_ptr();
+        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
 
-        let addr = AllocAddr::from_ptr(base_ptr, ptr);
+	   // DOING Switch from base_ptr to alloc_start_ptr (use AllocAddr::from_ptr_offset)
+	   let addr = AllocAddr::from_ptr(alloc_start_ptr, ptr);
         let page_meta = MiniPageMeta::from_addr(addr);
 
-        // Read the size class
-	   // TODO: Do dealloc
-	   let minipage_header = (*meta_page).get_minipage_header(page_meta);
-        let size_class = SizeClass::new((*minipage_header).size_class_exp);
+	   // Determine if big alloc
+	   match (*meta_page).big_alloc_flags[page_meta.page_idx] {
+		  Some(big_alloc_flag) => {
+			 // Is big alloc
+			 
+			 // Memory was allocated using the big allocation technique
+			 // Record metrics
+			 cfg_if! {
+				if #[cfg(feature = "metrics")] {
+                        (*(*meta_page).metrics).total_deallocs[NUM_SIZE_CLASSES as usize] += 1;
+				}
+			 }
 
-        // Determine if big alloc
-        if (*minipage_header).size_class_exp > MAX_SIZE_CLASS {
-            // Memory was allocated using the big allocation technique
-            // Record metrics
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    (*(*meta_page).metrics).total_deallocs[NUM_SIZE_CLASSES_USIZE] += 1;
-                }
-            }
+			 // Search for a big allocation header corresponding to ptr
+			 let mut big_ptr = self.big_alloc_head;
 
-            // Search for a big allocation header corresponding to ptr
-            let mut big_ptr = self.big_alloc_head;
-
-            while let Some(big_head) = big_ptr {
-                cfg_if! {
-                    if #[cfg(feature = "metrics")] {
-                        (*(*meta_page).metrics).heap_bytes_read += size_of::<BigAllocHeader>();
-                    }
-                }
-                
-                // Check allocated
-                if !(*big_head).free {
-                    // Check in big allocation header's range
-                    let start_addr = AllocAddr::from_ptr(base_ptr, big_head.offset(1) as *mut u8);
-                    let end_addr = AllocAddr::new(u32::from(start_addr.addr) + (*big_head).size_bytes);
-
-                    if addr.addr >= start_addr.addr && addr.addr <= end_addr.addr {
-                        // In range, big_head is the header this allocation came from
-                        // Now free!
-                        cfg_if! {
-                            if #[cfg(feature = "metrics")] {
-                                (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
-                            }
+			 while let Some(big_head) = big_ptr {
+				cfg_if! {
+                        if #[cfg(feature = "metrics")] {
+					   (*(*meta_page).metrics).heap_bytes_read += size_of::<BigAllocHeader>();
                         }
-                        
-                        (*big_head).free = true; // true = unallocated
+				}
+				
+				// Check allocated
+				if !(*big_head).free {
+                        // Check in big allocation header's range
+                        let start_addr = AllocAddr::from_ptr(alloc_start_ptr, big_head.offset(1) as *mut u8);
+                        let end_addr = AllocAddr::new(u32::from(start_addr.addr) + (*big_head).size_bytes);
 
-                        // Exit early, as we have found the allocation's header and freed it
-                        return;
-                    }
-                }
-                
-                // Iterate
-                big_ptr = (*big_head).next;
-            }
+                        if addr.addr >= start_addr.addr && addr.addr <= end_addr.addr {
+					   // In range, big_head is the header this allocation came from
+					   // Now free!
+					   cfg_if! {
+						  if #[cfg(feature = "metrics")] {
+							 (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
+						  }
+					   }
+					   
+					   (*big_head).free = true; // true = unallocated
 
-            // If the while loop finishes without returning from the method then no big allocation header was found for this pointer. Which means the deallocation call is invalid.
+					   // Exit early, as we have found the allocation's header and freed it
+					   return;
+                        }
+				}
+				
+				// Iterate
+				big_ptr = (*big_head).next;
+			 }
 
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    self.failure = Some(AllocFail::BigDeallocHeaderNotFound);
-                }
-            }
+			 // If the while loop finishes without returning from the method then no big allocation header was found for this pointer. Which means the deallocation call is invalid.
 
-            return;
-        } else {
-            // Memory was allocated using MiniPages
+			 cfg_if! {
+				if #[cfg(feature = "metrics")] {
+                        self.failure = Some(AllocFail::BigDeallocHeaderNotFound);
+				}
+			 }
 
-            // Record metrics
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    (*(*meta_page).metrics).total_deallocs[size_class.exp_as_idx()] += 1;
-                }
-            }
+			 return;
+		  },
+		  None => {
+			 // Normal alloc, or no allocation at this address at all
+			 
+			 // Memory was allocated using MiniPages
+			 // Read the size class
+			 let minipage_header = (*meta_page).minipage_headers[page_meta.page_idx];
+			 let size_class = SizeClass::new((*minipage_header).size_class_exp);
 
-            // Determine segment
-            let segment = addr.get_segment(size_class);
+			 // Record metrics
+			 cfg_if! {
+				if #[cfg(feature = "metrics")] {
+                        (*(*meta_page).metrics).total_deallocs[size_class.exp_as_idx()] += 1;
+				}
+			 }
 
-            // Ensure segment was previously allocated
-            if segment.get_free_bitmap(base_ptr) {
-                // Segment not allocated
-                cfg_if! {
-                    if #[cfg(feature = "metrics")] {
-                        // For reading from a MiniPageHeader free_segments byte on the heap
+			 // Determine segment
+			 let segment = addr.get_segment(size_class);
+
+			 // Ensure segment was previously allocated
+			 if (*minipage_header).get_free_bitmap(segment) {
+				// Segment not allocated
+				cfg_if! {
+                        if #[cfg(feature = "metrics")] {
+					   // For reading from a MiniPageHeader free_segments byte on the heap
+					   (*(*meta_page).metrics).heap_bytes_read += size_of::<bool>();
+                        }
+				}
+				
+				return;
+			 }
+
+			 // Update segment bitmap
+			 (*minipage_header).write_free_bitmap(segment, true); // true = free
+
+			 cfg_if! {
+				if #[cfg(feature = "metrics")] {
+                        // For writing to a MiniPageHeader free_segments byte on the heap
+                        (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
+				}
+			 }
+
+			 // Push onto free segments stack if minipage is the current MiniPage
+			 if (*(*meta_page).free_minipages[size_class.exp_as_idx()]).peek() == Some(page_meta.page_idx) {
+				(*(*meta_page).free_segments[size_class.exp_as_idx()]).push(segment.segment_idx_u16());
+
+				cfg_if! {
+                        if #[cfg(feature = "metrics")] {
+					   // For peeking the free_minipages UnsafeStack on the heap
+					   (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_peek_cost(meta_page);
+					   
+					   // For pushing a free segment onto the free_segments UnsafeStack on the heap
+					   (*(*meta_page).free_segments[size_class.exp_as_idx()]).record_push_cost(meta_page);
+                        }
+				}
+			 } else if !(*minipage_header).on_free_minipages_stack {
+				// Not pushed on minipages stack
+				// First time we have deallocated from this MiniPage since it was full
+				
+				(*(*meta_page).free_minipages[size_class.exp_as_idx()]).push(page_meta.page_idx);
+				
+				cfg_if! {
+                        if #[cfg(feature = "metrics")] {
+					   // For pushing a MiniPageHeader pointer onto the free_minipages UnsafeStack on the heap
+					   (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_push_cost(meta_page);
+                        }
+				}
+			 }
+
+			 cfg_if! {
+				if #[cfg(feature = "metrics")] {
+                        // For reading the (*minipage_header).on_free_minipages_stack bool from the heap
                         (*(*meta_page).metrics).heap_bytes_read += size_of::<bool>();
-                    }
-                }
-                
-                return;
-            }
-
-            // Update segment bitmap
-            segment.write_free_bitmap(base_ptr, true);
-
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    // For writing to a MiniPageHeader free_segments byte on the heap
-                    (*(*meta_page).metrics).heap_bytes_write += size_of::<bool>();
-                }
-            }
-
-            // Push onto free segments stack if minipage is the current MiniPage
-            if (*(*meta_page).free_minipages[size_class.exp_as_idx()]).peek() == Some(minipage_header) {
-                (*(*meta_page).free_segments[size_class.exp_as_idx()]).push(segment.segment_idx_u16());
-
-                cfg_if! {
-                    if #[cfg(feature = "metrics")] {
-                        // For peeking the free_minipages UnsafeStack on the heap
-                        (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_peek_cost(meta_page);
-                        
-                        // For pushing a free segment onto the free_segments UnsafeStack on the heap
-                        (*(*meta_page).free_segments[size_class.exp_as_idx()]).record_push_cost(meta_page);
-                    }
-                }
-            } else if !(*minipage_header).on_free_minipages_stack {
-                // Not pushed on minipages stack
-                // First time we have deallocated from this MiniPage since it was full
-                
-                (*(*meta_page).free_minipages[size_class.exp_as_idx()]).push(minipage_header);
-                
-                cfg_if! {
-                    if #[cfg(feature = "metrics")] {
-                        // For pushing a MiniPageHeader pointer onto the free_minipages UnsafeStack on the heap
-                        (*(*meta_page).free_minipages[size_class.exp_as_idx()]).record_push_cost(meta_page);
-                    }
-                }
-            }
-
-            cfg_if! {
-                if #[cfg(feature = "metrics")] {
-                    // For reading the (*minipage_header).on_free_minipages_stack bool from the heap
-                    (*(*meta_page).metrics).heap_bytes_read += size_of::<bool>();
-                }
-            }
-        }
+				}
+			 }
+		  }
+	   }
     }
 }
 
