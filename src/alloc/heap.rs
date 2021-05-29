@@ -106,7 +106,7 @@ cfg_if! {
                 if let Some(ptr) = self.host_base_ptr {
                     return ptr;
                 } else {
-                    let ptr = malloc(MAX_PAGES * (PAGE_BYTES as usize)) as *mut u8;
+                    let ptr = malloc((MAX_PAGES * PAGE_BYTES) as usize) as *mut u8;
                     self.host_base_ptr = Some(ptr);
                     return ptr;
                 }
@@ -126,7 +126,7 @@ cfg_if! {
 
                 // Ensure not oversize
                 let new_guest_end_page = self.guest_end_page + delta_pages;
-                if new_guest_end_page > MAX_PAGES {
+                if new_guest_end_page > MAX_PAGES as usize {
                     // Is over what we can allocate
                     return usize::MAX;
                 }

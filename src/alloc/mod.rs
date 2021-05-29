@@ -179,6 +179,7 @@ cfg_if! {
 }
 
 /// Indicates if a MiniPage of space in the heap actually belongs to a big allocation.
+#[derive(Copy, Clone)]
 struct BigAllocFlag {
     /// Index to the first MiniPage of space in the heap where the big allocation header resides.
     start_idx: usize,
@@ -188,13 +189,13 @@ struct BigAllocFlag {
 struct MetaPage {
     /// Headers for all MiniPages.
     /// TODO: Make Option<*mut MiniPageHeader>
-    minipage_headers: [*mut MiniPageHeader, MAX_MINI_PAGES],
+    minipage_headers: [*mut MiniPageHeader; MAX_MINI_PAGES as usize],
 
     /// Array of flags which indicate if a MiniPage index actually belongs to a big allocation.
-    big_alloc_flags: [Option<*mut BigAllocFlag>, MAX_MINI_PAGES],
+    big_alloc_flags: [Option<BigAllocFlag>; MAX_MINI_PAGES as usize],
     
     /// Indexes of free MiniPages for each size class. The head of each list is the currently used MiniPage for that size class. The free_segments stack will track free indexes for this MiniPage. MiniPages are popped off these stacks when their free_segments stack is empty (aka when there are no free segments on the MiniPage).
-    free_minipages: [*mut UnsafeStack<u16>; NUM_SIZE_CLASSES_USIZE],
+    free_minipages: [*mut UnsafeStack<usize>; NUM_SIZE_CLASSES_USIZE],
 
     /// Free segment indexes from the head of free_minipages for each size class. Allows us to avoid searching the MiniPageHeader bitmap for the most recently used MiniPage.
     free_segments: [*mut UnsafeStack<u16>; NUM_SIZE_CLASSES_USIZE],
@@ -210,8 +211,8 @@ impl MetaPage {
         let page_ptr = alloc_ptr as *mut MetaPage;
 
 	   // Zero out all values
-	   (*page_ptr).minipage_headers = [null_mut(); MAX_MINI_PAGES];
-	   (*page_ptr).big_alloc_flags = [None; MAX_MINI_PAGES];
+	   (*page_ptr).minipage_headers = [null_mut(); MAX_MINI_PAGES as usize];
+	   (*page_ptr).big_alloc_flags = [None; MAX_MINI_PAGES as usize];
 	   (*page_ptr).free_minipages = [null_mut(); NUM_SIZE_CLASSES as usize];
 	   (*page_ptr).free_segments = [null_mut(); NUM_SIZE_CLASSES as usize];
 	   cfg_if! {
@@ -227,7 +228,7 @@ impl MetaPage {
         for i in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
             let size_class = SizeClass::new(i);
             
-            let (stack, after_ptr) = UnsafeStack::<u16>::alloc(
+            let (stack, after_ptr) = UnsafeStack::<usize>::alloc(
                 next_ptr,
                 MINI_PAGE_ALLOC_BYTES / 2_u32.pow(u32::from(size_class.exp)),
             );
@@ -241,7 +242,7 @@ impl MetaPage {
             
             let (stack, after_ptr) = UnsafeStack::<u16>::alloc(
                 next_ptr,
-                size_class.segments_max_num(),
+                size_class.segments_max_num().into(),
             );
             (*page_ptr).free_segments[size_class.exp_as_idx()] = stack;
             next_ptr = after_ptr;
@@ -268,13 +269,13 @@ struct UnsafeStack<T> where T: Copy {
     data_ptr: *mut T,
 
     /// Maximum number of T items.
-    max_size: u16,
+    max_size: u32,
 
     /// Current size of the stack.
-    size: u16,
+    size: u32,
 
     /// The index of the head within the data memory segment.
-    head_idx: u16,
+    head_idx: u32,
 }
 
 impl <T> UnsafeStack<T> where T: Copy {
@@ -283,7 +284,7 @@ impl <T> UnsafeStack<T> where T: Copy {
     ///
     /// # Panics
     /// If the size of T is larger than what can be represented by isize. But the overall Alligator is the only one who should be using this structure, so this should never happen.
-    unsafe fn alloc(start_addr: *mut u8, max_size: u16) -> (*mut UnsafeStack<T>, *mut u8) {
+    unsafe fn alloc(start_addr: *mut u8, max_size: u32) -> (*mut UnsafeStack<T>, *mut u8) {
         // Setup new UnsafeStack
         let stack_ptr = start_addr as *mut UnsafeStack<T>;
         
@@ -302,7 +303,7 @@ impl <T> UnsafeStack<T> where T: Copy {
     ///
     /// # Panics
     /// If the size of T is larger than what can be represented by isize. But the overall Alligator is the only one who should be using this structure, so this should never happen.
-    unsafe fn item_ptr(&mut self, i: u16) -> *mut T {
+    unsafe fn item_ptr(&mut self, i: u32) -> *mut T {
         self.data_ptr.offset((i % self.max_size).try_into().unwrap())
     }
 
@@ -416,7 +417,7 @@ impl MiniPageHeader {
     ///
     /// Safety:
     /// TODO
-    unsafe fn get_free_bitmap(self, segment: MiniPageSegment) -> bool {
+    unsafe fn get_free_bitmap(&mut self, segment: MiniPageSegment) -> bool {
         let search_mask = 1 << segment.bitmap_byte_bit_idx;
         let bit_free_status = ((*self).free_segments[segment.bitmap_byte_idx] & search_mask) >> segment.bitmap_byte_bit_idx;
 
@@ -472,7 +473,7 @@ impl SizeClass {
 
     /// Returns the maximum number of segments which can be stored in a MiniPage for this size class.
     pub fn segments_max_num(&self) -> u16 {
-        MINI_PAGE_ALLOC_BYTES / self.segment_bytes()
+        (MINI_PAGE_ALLOC_BYTES as u16) / self.segment_bytes()
     }
 }
 
@@ -590,7 +591,7 @@ impl MiniPageMeta {
         let page_idx: usize = usize::try_from((addr.addr_f64() / f64::from(MINI_PAGE_ALLOC_BYTES)).floor() as u32).unwrap();
 
         // Determine the segment within the page
-        let page_addr: usize = usize::from(MINI_PAGE_ALLOC_BYTES) * page_idx;
+        let page_addr: usize = (MINI_PAGE_ALLOC_BYTES as usize) * page_idx;
 
         MiniPageMeta{
             page_idx: page_idx,
@@ -717,7 +718,7 @@ impl BigAllocHeader {
 
         let required_bytes = interval_mult * (MINI_PAGE_ALLOC_BYTES as u32);
         
-        let size_bytes = required_bytes - BIG_ALLOC_HEADER_SIZE_U32;
+        let size_bytes = required_bytes - (size_of::<BigAllocHeader>() as u32);
 
         return (size_bytes, interval_mult);
     }
@@ -887,7 +888,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         self.fresh_minipages[size_class.exp_as_idx()] = node_ptr;
 
         // Increment the next MiniPageHeader address
-	   self.next_alloc_ptr = Some(next_alloc_ptr.offset(MINI_PAGE_ALLOC_BYTES));
+	   self.next_alloc_ptr = Some(next_alloc_ptr.offset(MINI_PAGE_ALLOC_BYTES as isize));
 
         Some((node_ptr, page_meta.page_idx))
     }
@@ -1008,7 +1009,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                     (*big_ptr).size_bytes = size_bytes;
 
 				// Set big allocation flags
-				for page_i in page_meta.page_idx..=(page_meta.page_idx + interval) {
+				for page_i in page_meta.page_idx..=(page_meta.page_idx + (interval as usize)) {
 				    (*meta_page).big_alloc_flags[page_i] = Some(BigAllocFlag{
 					   start_idx: page_meta.page_idx,
 				    });
@@ -1016,7 +1017,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                     
                     self.big_alloc_head = Some(big_ptr);
 
-				self.next_alloc_ptr = Some(next_alloc_ptr.offset((interval * MINI_PAGE_TOTAL_BYTES) as isize));
+				self.next_alloc_ptr = Some(next_alloc_ptr.offset((interval * MINI_PAGE_ALLOC_BYTES) as isize));
 
                     big_ptr
                 },
@@ -1081,7 +1082,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                             }
                         }
 				    
-				    ptr = (*meta_page).minipage_headers[page_idx];
+				    let ptr = (*meta_page).minipage_headers[page_idx];
 
                         // If free segments stack size is 0 => the MiniPage we just peeked was just added and we haven't grabbed the free indexes from the stack yet
                         if (*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0 {
