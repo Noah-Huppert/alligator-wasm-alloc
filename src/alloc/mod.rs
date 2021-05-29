@@ -132,7 +132,7 @@ struct AllocatorImpl<H> where H: HostHeap {
     /// The first MiniPage worth of space in the heap is reserved for this "meta page". It is used to store information which needs to be placed on the heap for the Allicator implementation. Some if allocated and None if not allocated yet.
     meta_page: Option<*mut MetaPage>,
 
-    /// The address of the first byte of memory which can be used to satisfy user allocation requests. Takes into account the space for the meta-page. Only Some after ensure_meta_page() is called.
+    /// The address of the first byte of memory which can be used to satisfy user allocation requests. Takes into account the space for the meta-page. Only Some after ensure_heap() is called.
     alloc_start_ptr: Option<*mut u8>,
 
     /// Pointer to the next free byte on the heap which can be used for allocation. Used internally to make sure the different data structures don't overlap. Not related to the next address a client might get if they ask for an allocation.
@@ -188,8 +188,8 @@ struct BigAllocFlag {
 /// The first MiniPage of the heap will hold some metadata which we don't want / can't put in the AllocatorImpl stack object.
 struct MetaPage {
     /// Headers for all MiniPages.
-    /// TODO: Make Option<*mut MiniPageHeader>
-    minipage_headers: [*mut MiniPageHeader; MAX_MINI_PAGES as usize],
+    /// TODO Make Option<*mut MiniPageHeader>?? MAYBe NOT?
+    minipage_headers: [MiniPageHeader; MAX_MINI_PAGES as usize],
 
     /// Array of flags which indicate if a MiniPage index actually belongs to a big allocation.
     big_alloc_flags: [Option<BigAllocFlag>; MAX_MINI_PAGES as usize],
@@ -206,12 +206,20 @@ struct MetaPage {
 }
 
 impl MetaPage {
-    /// Allocates a MetaPage at the specified alloc_ptr. Returns the tuple: (metapage ptr, next ptr). Where next ptr is the next byte of memory after the allocated MetaPage.
+    /// Allocate a MetaPage at the specified `alloc_ptr`.
+    ///
+    /// # Arguments
+    /// * `alloc_ptr` - Raw pointer to the location in the heap where the new MetaPage will be allocated
+    ///
+    /// # Returns
+    /// Tuple with:
+    /// * Pointer to the allocated `MetaPage`
+    /// * Pointer to the next byte of memory after the `MetaPage` and all its data
     unsafe fn alloc(alloc_ptr: *mut u8) -> (*mut MetaPage, *mut u8) {
         let page_ptr = alloc_ptr as *mut MetaPage;
 
 	   // Zero out all values
-	   (*page_ptr).minipage_headers = [null_mut(); MAX_MINI_PAGES as usize];
+	   // (*page_ptr).minipage_headers = [None; MAX_MINI_PAGES as usize];
 	   (*page_ptr).big_alloc_flags = [None; MAX_MINI_PAGES as usize];
 	   (*page_ptr).free_minipages = [null_mut(); NUM_SIZE_CLASSES as usize];
 	   (*page_ptr).free_segments = [null_mut(); NUM_SIZE_CLASSES as usize];
@@ -747,12 +755,49 @@ impl AllocatorImpl<HeapType> {
 }
 
 impl<H> AllocatorImpl<H> where H: HostHeap {
-    /// Ensures that the MetaPage has been allocated and allocates the MetaPage if it has not been. Returns a tuple with the existing, or newly allocated, MetaPage plus the alloc_start_ptr and next_alloc_ptr.
-    unsafe fn ensure_meta_page(&mut self) -> (*mut MetaPage, *mut u8, *mut u8) {
+    /// Initializes the host heap and MetaPage if they are not already.
+    ///
+    /// # Returns
+    /// Tuple containing:
+    /// * Pointer to the start of the host heap, not necessarily 0
+    /// * Pointer to the `MetaPage`
+    /// * Unwrapped `alloc_start_ptr`, start of minipages in the heap
+    /// * Unwrapped `next_alloc_ptr`, next free byte of memory in the heap
+    unsafe fn ensure_heap(&mut self) -> Result<(*mut u8, *mut MetaPage, *mut u8, *mut u8), ()> {
+	   // Check if the allocator has grabbed its pages
+        // from the host yet.
+        if !self.did_init_heap {
+            // If the pages haven't been grabbed yet
+            // Determine delta pages we need to grow by
+            let current_pages = (*self.heap.get()).memory_size();
+            let delta_pages = MAX_HOST_PAGES - current_pages;
+
+            assert!(delta_pages > 0, "Shouldn't be requesting to grow the memory by a negative number");
+            
+            // Request the memory is grown via the host. grow_res will be the number of pages before the grow, and thus the start of our new allocated pages, or usize::MAX if error.  
+            let grow_res = (*self.heap.get()).memory_grow(delta_pages);
+            if grow_res == usize::MAX {
+                // Failed to allocate the memory we need
+
+                cfg_if! {
+                    if #[cfg(feature = "metrics")] {
+                        self.failure = Some(AllocFail::HostGrowFail);
+                    }
+                }
+                
+                // from the host
+                return Err(());
+            }
+
+            self.did_init_heap = true;
+        }
+
+	   // Get heap base pointer
 	   let base_ptr = (*self.heap.get()).base_ptr();
-	   
+
+	   // Allocate meta page
         match self.meta_page {
-            Some(p) => (p, self.alloc_start_ptr.unwrap(), self.next_alloc_ptr.unwrap()),
+            Some(p) => Ok((base_ptr, p, self.alloc_start_ptr.unwrap(), self.next_alloc_ptr.unwrap())),
             None => {
                 // Initialize meta page
                 let (p, next_ptr) = MetaPage::alloc(base_ptr);
@@ -771,7 +816,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                     }
                 }
                 
-                (p, next_ptr, next_ptr)
+                Ok((base_ptr, p, next_ptr, next_ptr))
             },
         }
     }
@@ -781,7 +826,10 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
     /// Returns None if there were no free segments on the MiniPage.
     unsafe fn free_segments_update(&mut self, minipage: *mut MiniPageHeader) -> Option<u16> {
         let size_class = SizeClass::new((*minipage).size_class_exp);
-        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
+        let (_base_ptr, meta_page, alloc_start_ptr, next_alloc_ptr) = match self.ensure_heap() {
+		  Ok(v) => v,
+		  Err(_) => return None,
+	   };
 
         let mut search_byte_i = 0;
         let mut first_free_found: Option<u16> = None;
@@ -832,8 +880,10 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
     unsafe fn add_minipage(&mut self, size_class_exp: u8) -> Option<(*mut MiniPageHeader, usize)> {
         let size_class = SizeClass::new(size_class_exp);
 
-	   let base_ptr = (*self.heap.get()).base_ptr();
-        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
+        let (base_ptr, meta_page, alloc_start_ptr, next_alloc_ptr) = match self.ensure_heap() {
+		  Ok(v) => v,
+		  Err(_) => return None,
+	   };
 
         cfg_if! {
             if #[cfg(feature = "metrics")] {
@@ -858,7 +908,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         // Create new node
 	   let page_addr = AllocAddr::from_ptr(base_ptr, next_alloc_ptr);
 	   let page_meta = MiniPageMeta::from_addr(page_addr);
-        let node_ptr = (*meta_page).minipage_headers[page_meta.page_idx];
+        let node_ptr = &mut (*meta_page).minipage_headers[page_meta.page_idx];
         (*node_ptr).next = next;
         (*node_ptr).size_class_exp = size_class_exp;
         (*node_ptr).free_segments = [255; MINI_PAGE_FREE_SEGMENTS_SIZE]; // All 1 = all unallocated
@@ -905,38 +955,12 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             
             return null_mut();
         }
-
-        // Check if the allocator has grabbed its pages
-        // from the host yet.
-        if !self.did_init_heap {
-            // If the pages haven't been grabbed yet
-            // Determine delta pages we need to grow by
-            let current_pages = (*self.heap.get()).memory_size();
-            let delta_pages = MAX_HOST_PAGES - current_pages;
-
-            assert!(delta_pages > 0, "Shouldn't be requesting to grow the memory by a negative number");
-            
-            // Request the memory is grown via the host. grow_res will be the number of pages before the grow, and thus the start of our new allocated pages, or usize::MAX if error.  
-            let grow_res = (*self.heap.get()).memory_grow(delta_pages);
-            if grow_res == usize::MAX {
-                // Failed to allocate the memory we need
-
-                cfg_if! {
-                    if #[cfg(feature = "metrics")] {
-                        self.failure = Some(AllocFail::HostGrowFail);
-                    }
-                }
-                
-                // from the host
-                return null_mut();
-            }
-
-            self.did_init_heap = true;
-        }
        
         // Check Meta Page is initialized.
-	   let base_ptr = (*self.heap.get()).base_ptr();
-        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
+        let (base_ptr, meta_page, alloc_start_ptr, next_alloc_ptr) = match self.ensure_heap() {
+		  Ok(v) => v,
+		  Err(_) => return null_mut(),
+	   };
 
         // Determine size class of allocation
         let size_class = SizeClass::new_from_bytes(layout.size() as u16);
@@ -1082,7 +1106,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
                             }
                         }
 				    
-				    let ptr = (*meta_page).minipage_headers[page_idx];
+				    let ptr: *mut MiniPageHeader = &mut (*meta_page).minipage_headers[page_idx];
 
                         // If free segments stack size is 0 => the MiniPage we just peeked was just added and we haven't grabbed the free indexes from the stack yet
                         if (*(*meta_page).free_segments[size_class.exp_as_idx()]).size == 0 {
@@ -1185,7 +1209,6 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // Determine address we will allocate
-	   // DOING Figure out the page_idx from node_ptr or something above
 	   let page_meta = MiniPageMeta::new(page_idx);
         let segment = page_meta.get_segment(size_class, usize::from(next_free_segment_idx));
 
@@ -1200,7 +1223,6 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
         }
 
         // assert!(false,  "alloc made node_ptr={:?}", *node_ptr);
-	   // DOING Set MetaPage.big_alloc_flags
 
         // Return address
         segment.as_addr().as_ptr(alloc_start_ptr)
@@ -1208,8 +1230,10 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 
     unsafe fn dealloc(&mut self, ptr: *mut u8, _layout: Layout) {
         // Get some information about the heap
-	   let base_ptr = (*self.heap.get()).base_ptr();
-        let (meta_page, alloc_start_ptr, next_alloc_ptr) = self.ensure_meta_page();
+        let (base_ptr, meta_page, alloc_start_ptr, next_alloc_ptr) = match self.ensure_heap() {
+		  Ok(v) => v,
+		  Err(_) => return,
+	   };
 
 	   // DOING Switch from base_ptr to alloc_start_ptr (use AllocAddr::from_ptr_offset)
 	   let addr = AllocAddr::from_ptr(alloc_start_ptr, ptr);
@@ -1279,7 +1303,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 			 
 			 // Memory was allocated using MiniPages
 			 // Read the size class
-			 let minipage_header = (*meta_page).minipage_headers[page_meta.page_idx];
+			 let minipage_header = &mut (*meta_page).minipage_headers[page_meta.page_idx];
 			 let size_class = SizeClass::new((*minipage_header).size_class_exp);
 
 			 // Record metrics

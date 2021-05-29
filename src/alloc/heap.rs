@@ -1,4 +1,5 @@
 use cfg_if::cfg_if;
+use core::ptr::null_mut;
 
 /// The size of one WASM page.
 pub const PAGE_BYTES: u32 = 65536;
@@ -7,7 +8,8 @@ pub const PAGE_BYTES: u32 = 65536;
 pub const PAGE_BYTES_ISIZE: isize = PAGE_BYTES as isize;
 
 /// The maximum number of pages which can be allocated. Defined by the WebAssembly spec: https://webassembly.github.io/spec/js-api/index.html#limits
-pub const MAX_PAGES: u32 = 65536;
+/// Specification says 65536, we do one less to fit into u32.
+pub const MAX_PAGES: u32 = 65535;
 
 /// Host heap implementation. How the memory actually gets allocated by the operating system / runtime. Acts as one contiguous memory segment.
 /// Emulates the WASM memory model.
@@ -88,27 +90,36 @@ cfg_if! {
     } else if #[cfg(all(unix, target_pointer_width = "32"))] {
         use libc::malloc;
 
+	   /// The number of pages which can actually be used. This number is currently limited because malloc calls for the full 4 GB don't succeed in Rust (but I can get them to work in a C program). So for now just limit size of LibC HostHeap implementation.
+	   const ACTUAL_EMULATED_PAGES: u32 = 500;
+
         /// Implements a heap using libc malloc.
+	   ///
+	   /// Limited
         pub struct LibCHostHeap {
-            /// The host memory region pointer. None if
-            /// not allocated.
+            /// The host memory region pointer. None if not allocated.
             host_base_ptr: Option<*mut u8>,
 
-            /// The current end of the guest's memory
-            /// in pages.
+            /// The current end of the guest's memory in pages.
             guest_end_page: usize,
         }
 
         impl LibCHostHeap {
             /// Ensure that the host memory has been
             /// allocated. Returns the host_base_ptr value.
-            unsafe fn ensure_host_base_ptr(&mut self) -> *mut u8 {
-                if let Some(ptr) = self.host_base_ptr {
-                    return ptr;
-                } else {
-                    let ptr = malloc((MAX_PAGES * PAGE_BYTES) as usize) as *mut u8;
-                    self.host_base_ptr = Some(ptr);
-                    return ptr;
+            unsafe fn ensure_host_base_ptr(&mut self) -> Result<*mut u8, ()> {
+                match self.host_base_ptr {
+				Some(ptr) => Ok(ptr),
+				None => {
+                        let ptr = malloc((ACTUAL_EMULATED_PAGES * PAGE_BYTES) as usize) as *mut u8;
+				    if ptr.is_null() {
+					   // Failed to malloc
+					   return Err(());
+				    }
+				    
+                        self.host_base_ptr = Some(ptr);
+                        Ok(ptr)
+				},
                 }
             }
         }
@@ -122,11 +133,14 @@ cfg_if! {
             /// Grows the heap by a number of pages.
             unsafe fn memory_grow(&mut self, delta_pages: usize) -> usize {
                 // Lazy allocate the host memory
-                self.ensure_host_base_ptr();
+                match self.ensure_host_base_ptr() {
+				Err(_) => return usize::MAX, // failure
+				_ => {},
+			 };
 
                 // Ensure not oversize
                 let new_guest_end_page = self.guest_end_page + delta_pages;
-                if new_guest_end_page > MAX_PAGES as usize {
+                if new_guest_end_page > MAX_PAGES as usize || new_guest_end_page > ACTUAL_EMULATED_PAGES as usize {
                     // Is over what we can allocate
                     return usize::MAX;
                 }
@@ -140,9 +154,11 @@ cfg_if! {
 
             /// Returns a pointer to the base of the heap segment the allocator will manage.
             unsafe fn base_ptr(&mut self) -> *mut u8 {
-                // Lazy allocate the host memory,
-                // then return base ptr
-                self.ensure_host_base_ptr()
+                // Lazy allocate the host memory, then return base ptr
+                match self.ensure_host_base_ptr() {
+				Ok(ptr) => ptr,
+				Err(_) => null_mut(),
+			 }
             }
         }
 
