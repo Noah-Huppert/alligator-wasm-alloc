@@ -105,8 +105,7 @@ cfg_if! {
         }
 
         impl LibCHostHeap {
-            /// Ensure that the host memory has been
-            /// allocated. Returns the host_base_ptr value.
+            /// Ensure that the host memory has been allocated. Returns the host_base_ptr value.
             unsafe fn ensure_host_base_ptr(&mut self) -> Result<*mut u8, ()> {
                 match self.host_base_ptr {
 				Some(ptr) => Ok(ptr),
