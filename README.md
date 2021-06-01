@@ -49,9 +49,8 @@ struct, which implements the
 trait, can be used via the
 `#[global_allocator]` annotation:
 
-```rs
-// Tell Rust we want to use Alligator as the
-// heap allocator.
+```rust
+// Tell Rust we want to use Alligator as the heap allocator.
 #[global_allocator]
 static ALLOC: AlligatorAlloc = AlligatorAlloc::INIT;
 
