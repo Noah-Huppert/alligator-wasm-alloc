@@ -91,7 +91,7 @@ cfg_if! {
         use libc::malloc;
 
 	   /// The number of pages which can actually be used. This number is currently limited because malloc calls for the full 4 GB don't succeed in Rust (but I can get them to work in a C program). So for now just limit size of LibC HostHeap implementation.
-	   const ACTUAL_EMULATED_PAGES: u32 = 500;
+	   const ACTUAL_EMULATED_PAGES: u32 = 10;
 
         /// Implements a heap using libc malloc.
 	   ///

@@ -117,18 +117,19 @@ cfg_if! {
 /// Allocates an initial number of memory pages, then
 /// maintains a free linked list.
 struct AllocatorImpl<H> where H: HostHeap {
-    /// True if the initial call to allocate all the
-    /// memory we will use has been made.
+    /// True if the initial call to allocate all the memory we will use has been made.
     did_init_heap: bool,
     
-    /// The HostHeap implementation for the
-    /// current platform.
+    /// The HostHeap implementation for the current platform.
+    /// TODO Make Option and remove did_init_heap
     heap: UnsafeCell<H>,
 
     /// Head of MiniPage header free list for each size class.
+    /// TODO Make only available through metrics feature
     minipage_lists: [*mut MiniPageHeader; NUM_SIZE_CLASSES_USIZE],
 
     /// Head of big allocation header free list.
+    /// TODO Make use free stacks instead
     big_alloc_head: Option<*mut BigAllocHeader>,
 
     /// The first MiniPage worth of space in the heap is reserved for this "meta page". It is used to store information which needs to be placed on the heap for the Allicator implementation. Some if allocated and None if not allocated yet.
@@ -147,6 +148,7 @@ struct AllocatorImpl<H> where H: HostHeap {
     total_alloc_fresh: [u32; NUM_SIZE_CLASSES_USIZE],
 
     /// Address of the current fresh MiniPage for each size class. null_mut() if there is not one.
+    /// TODO Make Option
     fresh_minipages: [*mut MiniPageHeader; NUM_SIZE_CLASSES_USIZE],
 
     /// Cause of the failure.
@@ -177,7 +179,7 @@ cfg_if! {
             /// A de-allocation call was made, where it was determined that the pointer was from a big allocation. The program then tried to find the corresponding BigAllocHeader for the provided pointer. However a corresponding header was not found. The de-allocation call is considered a user error.
             BigDeallocHeaderNotFound,
 
-		  /// The allocator's logic made it try and access a MiniPageHeader which did not exist.
+		  /// The allocator's logic made it try and access a MiniPageHeader which does not exist.
 		  MiniPageHeaderNotFound,
         }
     }
@@ -199,10 +201,14 @@ struct MetaPage {
     /// Array of flags which indicate if a MiniPage index actually belongs to a big allocation.
     big_alloc_flags: [Option<BigAllocFlag>; MAX_MINI_PAGES as usize],
     
-    /// Indexes of free MiniPages for each size class. The head of each list is the currently used MiniPage for that size class. The free_segments stack will track free indexes for this MiniPage. MiniPages are popped off these stacks when their free_segments stack is empty (aka when there are no free segments on the MiniPage).
+    /// Stacks of free MiniPage indexes for each size class.
+    ///
+    /// The head of each stack indicates the in use MiniPage. The free_segments stack's values relate to these in use MiniPages.
+    ///
+    /// MiniPages are popped off stacks when there are no free segments left (ie., their free_segments stack is empty).
     free_minipages: [*mut UnsafeStack<usize>; NUM_SIZE_CLASSES_USIZE],
 
-    /// Free segment indexes from the head of free_minipages for each size class. Allows us to avoid searching the MiniPageHeader bitmap for the most recently used MiniPage.
+    /// Free segment indexes for in use MiniPage (head of free_minipages stack) of each size class. Allows us to avoid searching the MiniPageHeader bitmap for the most recently used MiniPage.
     free_segments: [*mut UnsafeStack<u16>; NUM_SIZE_CLASSES_USIZE],
 
     /// Allocator metrics
@@ -244,7 +250,7 @@ impl MetaPage {
             
             let (stack, after_ptr) = UnsafeStack::<usize>::alloc(
                 next_ptr,
-                MINI_PAGE_ALLOC_BYTES / 2_u32.pow(u32::from(size_class.exp)),
+                MINI_PAGE_ALLOC_BYTES / 2_u32.pow(u32::from(size_class.exp)), // TODO This is wrong, should be MAX_MINI_PAGES
             );
             (*page_ptr).free_minipages[size_class.exp_as_idx()] = stack;
             next_ptr = after_ptr;
@@ -1254,7 +1260,6 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
 		  Err(_) => return,
 	   };
 
-	   // DOING Switch from base_ptr to alloc_start_ptr (use AllocAddr::from_ptr_offset)
 	   let addr = AllocAddr::from_ptr(alloc_start_ptr, ptr);
         let page_meta = MiniPageMeta::from_addr(addr);
 
