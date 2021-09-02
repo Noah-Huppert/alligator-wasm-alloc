@@ -970,7 +970,7 @@ impl<H> AllocatorImpl<H> where H: HostHeap {
             return null_mut();
         }
        
-        // Check Meta Page is initialized.
+        // Get details about host heap
         let (base_ptr, meta_page, alloc_start_ptr, next_alloc_ptr) = match self.ensure_heap() {
 		  Ok(v) => v,
 		  Err(_) => return null_mut(),

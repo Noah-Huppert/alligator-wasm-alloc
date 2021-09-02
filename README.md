@@ -41,7 +41,7 @@ See [Design](#design) for more details on performance and internal workings.
 Currently a crate has not been published as the project
 is in development. However the `main` branch of the Git
 repository is always stable, and releases are
-tagged weekly.
+tagged.
 
 When a crate has been published the `AlligatorAlloc`
 struct, which implements the
