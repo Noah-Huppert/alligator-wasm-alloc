@@ -1,5 +1,5 @@
 mod alloc;
-use alloc::AlligatorAlloc;
+use alloc::{AlligatorAlloc,MIN_SIZE_CLASS,MAX_SIZE_CLASS};
 use alloc::heap::HeapType;
 use core::alloc::Layout;
 use std::alloc::GlobalAlloc;
@@ -16,14 +16,14 @@ static ALLOC: AlligatorAlloc<HeapType> = AlligatorAlloc::INIT;
 
 /// Allocate then free a number of bytes for each size class which will require more than one MiniPage.
 unsafe fn alloc_all() {
-    for n in 0..=11 {
+    for n in MIN_SIZE_CLASS..=MAX_SIZE_CLASS {
         let mut free_later: Vec<*mut u8> = vec!();
 
-        let segments_per_page = 2048 / 2_u32.pow(n);
+        let segments_per_page = 2048 / 2_u32.pow(u32::from(n));
 
         for i in 0..segments_per_page * 10 {
             // Create layout which requests the maximum number of bytes possible for this size class
-            let layout = match Layout::from_size_align(2_usize.pow(n), 1) {
+            let layout = match Layout::from_size_align(2_usize.pow(u32::from(n)), 1) {
                 Ok(l) => l,
                 Err(e) => panic!("error making Layout: {}", e),
             };
@@ -51,7 +51,7 @@ unsafe fn alloc_all() {
 
         // Free the memory we intentionally left laying around.
         for ptr in free_later.iter() {
-            let layout = match Layout::from_size_align(2_usize.pow(n), 1) {
+            let layout = match Layout::from_size_align(2_usize.pow(u32::from(n)), 1) {
                 Ok(l) => l,
                 Err(e) => panic!("error making Layout: {}", e),
             };

@@ -1,6 +1,6 @@
 [package]
 name = "alligator"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Noah Huppert <contact@noahh.io>"]
 edition = "2018"
 
@@ -23,8 +23,8 @@ name = "bench-use-global"
 path = "src/bench-use-global.rs"
 
 [[bin]]
-name = "bench-alloc-report"
-path = "src/bench-alloc-report.rs"
+name = "bench-random-report"
+path = "src/bench-random-report.rs"
 
 [[bin]]
 name = "generate-cheaders"
