@@ -43,7 +43,7 @@ const NUM_SIZE_CLASSES_USIZE: usize = NUM_SIZE_CLASSES as usize;
 /// The number of MiniPages which can be allocated in one WASM page.
 const MINI_PAGES_PER_WASM_PAGE: u32 = heap::PAGE_BYTES / MINI_PAGE_ALLOC_BYTES;
 
-/// The maximum number of MiniPages which can be allocated, every. Dictated by the maximum WASM heap size.
+/// The maximum number of MiniPages which can be allocated, ever. Dictated by the maximum WASM heap size.
 const MAX_MINI_PAGES: u32 = MINI_PAGES_PER_WASM_PAGE * heap::MAX_PAGES;
 
 cfg_if! {
@@ -114,8 +114,7 @@ cfg_if! {
     }
 }
 
-/// Allocates an initial number of memory pages, then
-/// maintains a free linked list.
+/// Allocates an initial number of memory pages, then maintains a free linked list.
 struct AllocatorImpl<H> where H: HostHeap {
     /// True if the initial call to allocate all the memory we will use has been made.
     did_init_heap: bool,
