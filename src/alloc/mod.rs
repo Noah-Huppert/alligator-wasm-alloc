@@ -249,7 +249,7 @@ impl MetaPage {
             
             let (stack, after_ptr) = UnsafeStack::<usize>::alloc(
                 next_ptr,
-                MINI_PAGE_ALLOC_BYTES / 2_u32.pow(u32::from(size_class.exp)), // TODO This is wrong, should be MAX_MINI_PAGES
+                MINI_PAGE_ALLOC_BYTES / 2_u32.pow(u32::from(size_class.exp)),
             );
             (*page_ptr).free_minipages[size_class.exp_as_idx()] = stack;
             next_ptr = after_ptr;
