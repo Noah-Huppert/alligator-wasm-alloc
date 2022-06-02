@@ -88,10 +88,14 @@ cfg_if! {
 
         pub type HeapType = WASMHostHeap;
     } else if #[cfg(all(unix, target_pointer_width = "32"))] {
-        use libc::malloc;
+	   use std::fs;
+	   use memmap;
 
 	   /// The number of pages which can actually be used. This number is currently limited because malloc calls for the full 4 GB don't succeed in Rust (but I can get them to work in a C program). So for now just limit size of LibC HostHeap implementation.
-	   const ACTUAL_EMULATED_PAGES: u32 = 10;
+	   const ACTUAL_EMULATED_PAGES: u32 = MAX_PAGES;
+
+	   /// Location of the memory mapped file used to emuate the WASM stack.
+	   // const MMAP_FILE_PATH: &'static str = ;
 
         /// Implements a heap using libc malloc.
 	   ///
@@ -110,11 +114,26 @@ cfg_if! {
                 match self.host_base_ptr {
 				Some(ptr) => Ok(ptr),
 				None => {
-                        let ptr = malloc((ACTUAL_EMULATED_PAGES * PAGE_BYTES) as usize) as *mut u8;
-				    if ptr.is_null() {
-					   // Failed to malloc
-					   return Err(());
-				    }
+				    // Open file to use for mmap
+				    let map_file_res = fs::OpenOptions::new()
+					   .read(true)
+					   .write(true)
+					   .create(true)
+					   .open("./host-mmap");
+				    let map_file = match map_file_res {
+					   Ok(f) => f,
+					   Err(_) => return Err(()),
+				    };
+
+				    // Create memory map
+				    let mmap_res = memmap::MmapOptions::new()
+					   .stack()
+					   .len((ACTUAL_EMULATED_PAGES * PAGE_BYTES) as usize)
+					   .map_mut(&map_file);
+				    let ptr = match mmap_res {
+					   Ok(mut p) => p.as_mut_ptr(),
+					   Err(_) => return Err(()),
+				    };
 				    
                         self.host_base_ptr = Some(ptr);
                         Ok(ptr)
